@@ -38,7 +38,7 @@ class RGSS_Scripts implements vscode.FileSystemProvider {
 
     const scripts: [number, ArrayBuffer, ArrayBuffer][] = []
     for (const [magic, title, code] of this.scripts) {
-      const title_ = this._encoder.encode(title)
+      const title_ = this._encoder.encode(title).buffer
       const code_ = new Uint8Array(zlib.deflateSync(code)).buffer
       scripts.push([magic, title_, code_])
     }
