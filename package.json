@@ -1,0 +1,45 @@
+{
+  "name": "vscode-rgss-scripts",
+  "displayName": "RGSS Scripts",
+  "version": "0.1.0",
+  "description": "Open and edit Scripts.rvdata2 in VS Code",
+  "categories": [
+    "Other"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hyrious/vscode-rgss-scripts.git"
+  },
+  "publisher": "hyrious",
+  "main": "./extension.js",
+  "browser": "./bundle.js",
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile:browser": "esbuild extension.ts --bundle --format=cjs --external:vscode --outfile=bundle.js --minify --sourcemap --sources-content=false",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "rgss.open",
+        "title": "Open Scripts.rvdata2",
+        "category": "RGSS Scripts"
+      }
+    ]
+  },
+  "activationEvents": [
+    "onFileSystem:rgss"
+  ],
+  "dependencies": {
+    "@hyrious/marshal": "^0.2.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.4.7",
+    "@types/vscode": "^1.75.0",
+    "esbuild": "^0.18.17"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  }
+}
