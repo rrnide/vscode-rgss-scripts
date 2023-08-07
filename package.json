@@ -14,10 +14,10 @@
   "main": "./extension.js",
   "browser": "./bundle.js",
   "scripts": {
-    "vscode:prepublish": "npm run compile",
+    "clean": "rimraf extension.js bundle.js",
+    "compile": "esbuild extension.ts --bundle --platform=node --packages=external --outfile=extension.js",
     "compile:browser": "esbuild extension.ts --bundle --format=cjs --external:vscode --outfile=bundle.js --minify --sourcemap --sources-content=false",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./"
+    "vscode:prepublish": "npm run compile"
   },
   "contributes": {
     "commands": [
@@ -25,19 +25,57 @@
         "command": "rgss.open",
         "title": "Open Scripts.rvdata2",
         "category": "RGSS Scripts"
+      },
+      {
+        "command": "rgss.open2",
+        "title": "Open this file",
+        "category": "RGSS Scripts"
+      },
+      {
+        "command": "rgss.close",
+        "title": "Close Scripts.rvdata2",
+        "category": "RGSS Scripts"
       }
-    ]
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "when": "resourceLangId == rvdata2 && !explorerResourceIsRoot",
+          "command": "rgss.open",
+          "group": "navigation"
+        },
+        {
+          "when": "resourceLangId == rvdata2 && explorerResourceIsRoot",
+          "command": "rgss.close",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "when": "false",
+          "command": "rgss.close"
+        },
+        {
+          "when": "editorLangId == rvdata2",
+          "command": "rgss.open2"
+        }
+      ]
+    }
   },
   "activationEvents": [
-    "onFileSystem:rgss"
+    "workspaceContains:**/Scripts.rvdata2",
+    "onLanguage:rvdata2",
+    "onFileSystem:rgss",
+    "onStartupFinished"
   ],
   "dependencies": {
     "@hyrious/marshal": "^0.2.5"
   },
   "devDependencies": {
-    "@types/node": "^20.4.7",
+    "@hyrious/rimraf": "^0.1.0",
+    "@types/node": "18.x",
     "@types/vscode": "^1.75.0",
-    "esbuild": "^0.18.17"
+    "esbuild": "^0.18.18"
   },
   "engines": {
     "vscode": "^1.75.0"

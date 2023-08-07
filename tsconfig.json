@@ -5,7 +5,6 @@
     "target": "ES6",
     "moduleResolution": "Node",
     "module": "CommonJS",
-    "esModuleInterop": true,
     "skipLibCheck": true,
     "lib": ["ES6"],
     "noImplicitOverride": true,

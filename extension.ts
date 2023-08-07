@@ -1,60 +1,162 @@
-'use strict'
+// TODO: remove them for browser build
+import * as path from 'path'
+import * as zlib from 'zlib'
 
 import * as vscode from 'vscode'
 import * as marshal from '@hyrious/marshal'
-import * as fs from 'fs'
-import * as zlib from 'zlib'
 
-declare var console: { log(...args: any[]): void }
+type RGSS_Scripts_Data_Item = [magic: number, title: string, code: Uint8Array]
+type RGSS_Scripts_Data = RGSS_Scripts_Data_Item[]
+type CacheEntry = { stat: vscode.FileStat; contents: RGSS_Scripts_Data }
 
-class RGSS_Scripts implements vscode.FileSystemProvider {
-  private _encoder = new TextEncoder()
-  private _decoder = new TextDecoder()
+// Simulate a virtual FS whose path looks like rgss:/path/to/Scripts.rvdata2/001_Title.rb
+// Note: use 'vscode.workspace.fs' to access the system FS (works in browser too)
+export class RGSS_Scripts implements vscode.FileSystemProvider {
+  private readonly _encoder = new TextEncoder()
+  private readonly _decoder = new TextDecoder()
 
-  public currentFile: vscode.Uri | undefined
+  // Cache opened Scripts.rvdata2 files, populate its stats to the contents
+  private readonly _cache = new Map<string, CacheEntry>()
 
-  public scripts: [magic: number, title: string, code: Uint8Array][] | null = null
+  // p = "/path/to/Scripts.rvdata2/001_Title.rb"
+  // or "C:\\path\\to\\Scripts.rvdata2\\001_Title.rb" on Windows
+  private _parse(p: string): { file: string; index: number; title: string } | undefined {
+    if (process.platform === 'win32') {
+      p = p.replace(/\\/g, '/')
+    }
+    var index = p.indexOf('/Scripts.rvdata2')
+    if (index < 0) return undefined
 
-  async refresh(): Promise<void> {
-    const uri = this.currentFile
-    if (uri && uri.fsPath) {
-      const buffer = await fs.promises.readFile(uri.fsPath)
-      const buffer2 = new Uint8Array(buffer).buffer
-      const scripts: [number, ArrayBuffer, ArrayBuffer][] = marshal.load(buffer2, { decodeString: false })
-      const scripts2: [number, string, Uint8Array][] = []
-      for (const [magic, title_, code_] of scripts) {
-        const title = this._decoder.decode(title_)
-        const code = new Uint8Array(zlib.inflateSync(code_))
-        scripts2.push([magic, title, code])
+    if (p.length === index + 16) {
+      return { file: p, index: -1, title: '' }
+    }
+    if (p[index + 16] !== '/') return undefined
+
+    var file = p.slice(0, index + 16)
+    if (process.platform === 'win32') {
+      file = file.replace(/\//g, '\\')
+    }
+    p = p.slice(index + 17)
+    var sep = p.indexOf('_')
+    if (sep < 0) return undefined
+    var index = Number.parseInt(p.slice(0, sep))
+    if (Number.isNaN(index)) return undefined
+    var title = p.slice(sep + 1)
+    if (title.includes('/')) return undefined
+    if (title.endsWith('.rb')) {
+      title = title.slice(0, -3)
+    }
+    return { file, index, title }
+  }
+
+  private async _open(file: string): Promise<CacheEntry> {
+    var entry = this._cache.get(file)
+    if (entry) return entry
+
+    var uri = vscode.Uri.file(file)
+    var stat = await vscode.workspace.fs.stat(uri) // throws file not found error
+    var u8 = await vscode.workspace.fs.readFile(uri)
+
+    // https://github.com/hyrious/rvdata2-textconv/blob/main/index.js
+    var data = marshal.load(u8.buffer, { decodeString: false })
+    var contents: RGSS_Scripts_Data = []
+    for (var i = 0; i < data.length; i++) {
+      var [magic, title_, code_] = data[i]
+      var title = this._decoder.decode(title_)
+      var code = new Uint8Array(zlib.inflateSync(code_)) // TODO: use pako in browser
+      contents.push([magic, title, code])
+    }
+
+    stat.type = vscode.FileType.Directory
+    entry = { stat, contents }
+    this._cache.set(file, entry)
+    return entry
+  }
+
+  private _name(index: number, title: string): string {
+    return `${index.toString().padStart(3, '0')}_${title}.rb`
+  }
+
+  private _empty(): RGSS_Scripts_Data_Item {
+    return [(Math.random() * 32768) | 0, '', new Uint8Array()]
+  }
+
+  private _uri(file: string, arr: RGSS_Scripts_Data, index: number): vscode.Uri {
+    return vscode.Uri.joinPath(vscode.Uri.file(file), this._name(index, arr[index][1]))
+  }
+
+  private _ensure(file: string, arr: RGSS_Scripts_Data, index: number): RGSS_Scripts_Data_Item {
+    while (index >= arr.length) {
+      arr.push(this._empty())
+      this._fireSoon({
+        type: vscode.FileChangeType.Created,
+        uri: this._uri(file, arr, index),
+      })
+    }
+    return arr[index]
+  }
+
+  // If 'index' is not the last deleted items, send a 'changed' event
+  // set 'index = -1' to not do this.
+  private _shrink(file: string, arr: RGSS_Scripts_Data, index: number): void {
+    for (var i = arr.length - 1; i >= 0; i--) {
+      var item = arr[i]
+      if (item[1].length > 0 || item[2].length > 0) {
+        break
       }
-      this.scripts = scripts2
-    } else {
-      this.scripts = null
+      this._fireSoon({
+        type: vscode.FileChangeType.Deleted,
+        uri: this._uri(file, arr, i),
+      })
+    }
+    arr.length = i + 1
+    if (0 <= index && index < i) {
+      this._fireSoon({
+        type: vscode.FileChangeType.Changed,
+        uri: this._uri(file, arr, index),
+      })
     }
   }
 
-  flush(): void {
-    if (!this.scripts || !this.currentFile) return
+  private _flush(file: string, contents: RGSS_Scripts_Data): Thenable<void> {
+    var data = contents.map(([magic, title, code]) => [
+      magic,
+      this._encoder.encode(title).buffer,
+      new Uint8Array(zlib.deflateSync(code)).buffer,
+    ])
+    var u8 = new Uint8Array(marshal.dump(data))
+    return vscode.workspace.fs.writeFile(vscode.Uri.file(file), u8)
+  }
 
-    const scripts: [number, ArrayBuffer, ArrayBuffer][] = []
-    for (const [magic, title, code] of this.scripts) {
-      const title_ = this._encoder.encode(title).buffer
-      const code_ = new Uint8Array(zlib.deflateSync(code)).buffer
-      scripts.push([magic, title_, code_])
+  private _rename(file: string, arr: RGSS_Scripts_Data, index: number, title: string): void {
+    if (arr[index][1] !== title) {
+      this._fireSoon({
+        type: vscode.FileChangeType.Deleted,
+        uri: this._uri(file, arr, index),
+      })
+      arr[index][1] = title
+      this._fireSoon({
+        type: vscode.FileChangeType.Created,
+        uri: this._uri(file, arr, index),
+      })
     }
-    const buffer = marshal.dump(scripts)
+  }
 
-    fs.writeFileSync(this.currentFile.fsPath, Buffer.from(buffer))
+  private _write(file: string, arr: RGSS_Scripts_Data, index: number, content: Uint8Array): void {
+    arr[index][2] = content
+    this._fireSoon({
+      type: vscode.FileChangeType.Changed,
+      uri: this._uri(file, arr, index),
+    })
   }
 
   private _emitter = new vscode.EventEmitter<vscode.FileChangeEvent[]>()
   private _bufferedEvents: vscode.FileChangeEvent[] = []
   private _fireSoonHandle: NodeJS.Timer | undefined
 
-  readonly onDidChangeFile: vscode.Event<vscode.FileChangeEvent[]> = this._emitter.event
+  readonly onDidChangeFile = this._emitter.event
 
-  watch(_uri: vscode.Uri): vscode.Disposable {
-    // ignore, fires for all changes...
+  watch(uri: vscode.Uri, options: any): vscode.Disposable {
     return new vscode.Disposable(() => void 0)
   }
 
@@ -67,194 +169,234 @@ class RGSS_Scripts implements vscode.FileSystemProvider {
 
     this._fireSoonHandle = setTimeout(() => {
       this._emitter.fire(this._bufferedEvents)
+      for (const { type, uri } of this._bufferedEvents) {
+        console.log(vscode.FileChangeType[type], ' ', uri.path)
+      }
       this._bufferedEvents.length = 0
     }, 5)
   }
 
-  private _parse(uri: vscode.Uri): { index: number; title: string } | undefined {
-    const parts = uri.path.split('/')
-    if (parts.length !== 2) return undefined
-
-    const match = parts[1].match(/^(\d+)-(.*)\.rb$/)
-    if (!match) return undefined
-
-    const index = parseInt(match[1])
-    if (isNaN(index)) return undefined
-
-    return { index, title: match[2] }
-  }
-
-  private _lookup(uri: vscode.Uri, silent: false): vscode.FileStat
-  private _lookup(uri: vscode.Uri, silent: boolean): vscode.FileStat | undefined
-  private _lookup(uri: vscode.Uri, silent: boolean): vscode.FileStat | undefined {
-    if (!this.scripts) throw vscode.FileSystemError.Unavailable(uri)
-
-    if (uri.path === '/') return { type: vscode.FileType.Directory, ctime: 0, mtime: 0, size: 0 }
-
-    const parsed = this._parse(uri)
-    if (!parsed) return this._notFound(uri, silent)
-
-    const { index } = parsed
-
-    const script = this.scripts[index]
-    if (!script) return this._notFound(uri, silent)
-
-    return { type: vscode.FileType.File, ctime: 0, mtime: 0, size: script[2].length }
-  }
-
-  private _lookupAsDirectory(uri: vscode.Uri, silent: false): vscode.FileStat
-  private _lookupAsDirectory(uri: vscode.Uri, silent: boolean): vscode.FileStat | undefined
-  private _lookupAsDirectory(uri: vscode.Uri, silent: boolean): vscode.FileStat | undefined {
-    const entry = this._lookup(uri, silent)
-    if (!entry || entry.type === vscode.FileType.Directory) return entry
-    else throw vscode.FileSystemError.FileNotADirectory(uri)
-  }
-
-  private _lookupAsFile(uri: vscode.Uri, silent: false): vscode.FileStat
-  private _lookupAsFile(uri: vscode.Uri, silent: boolean): vscode.FileStat | undefined
-  private _lookupAsFile(uri: vscode.Uri, silent: boolean): vscode.FileStat | undefined {
-    const entry = this._lookup(uri, silent)
-    if (!entry || entry.type === vscode.FileType.File) return entry
-    else throw vscode.FileSystemError.FileIsADirectory(uri)
-  }
-
-  private _notFound(uri: vscode.Uri, silent: boolean): vscode.FileStat | undefined {
-    if (silent) return undefined
-    else throw vscode.FileSystemError.FileNotFound(uri)
-  }
-
-  private _padZero(i: number): string {
-    return String(i).padStart(3, '0')
-  }
-
-  private _noPermission(): never {
-    throw vscode.FileSystemError.NoPermissions("Can only write to 'rgss:/{index}-{title}'")
-  }
-
-  stat(uri: vscode.Uri): vscode.FileStat {
-    return this._lookup(uri, false)
-  }
-
-  readDirectory(uri: vscode.Uri): [string, vscode.FileType][] {
-    this._lookupAsDirectory(uri, false)
-
-    const result: [string, vscode.FileType][] = []
-    const n = this.scripts!.length
-    for (let i = 0; i < n; ++i) {
-      const script = this.scripts![i]
-      if (!script) continue
-
-      const [_magic, title] = script
-      const name = this._padZero(i) + '-' + title + '.rb'
-      result.push([name, vscode.FileType.File])
+  async stat(uri: vscode.Uri): Promise<vscode.FileStat> {
+    var info = this._parse(uri.fsPath)
+    if (info == null) {
+      throw vscode.FileSystemError.FileNotFound(uri)
     }
 
-    return result
+    var entry = await this._open(info.file)
+    if (info.index < 0) {
+      return entry.stat
+    }
+
+    var item = entry.contents[info.index]
+    if (item == null || item[1] !== info.title) {
+      throw vscode.FileSystemError.FileNotFound(uri)
+    }
+
+    return {
+      type: vscode.FileType.File,
+      ctime: entry.stat.ctime,
+      mtime: entry.stat.mtime,
+      size: entry.contents[info.index][2].length,
+      permissions: entry.stat.permissions,
+    }
   }
 
-  readFile(uri: vscode.Uri): Uint8Array {
-    this._lookupAsFile(uri, false)
+  async readDirectory(uri: vscode.Uri): Promise<[string, vscode.FileType][]> {
+    var stat = await this.stat(uri)
+    if (stat.type !== vscode.FileType.Directory) {
+      throw vscode.FileSystemError.FileNotADirectory(uri)
+    }
 
-    const { index } = this._parse(uri)!
+    var info = this._parse(uri.fsPath)!
+    var entry = await this._open(info.file)
+    if (info.index < 0) {
+      return entry.contents.map(([_, title], index) => [this._name(index, title), vscode.FileType.File])
+    }
 
-    const [_magic, _title, code] = this.scripts![index]
-    return code
+    throw vscode.FileSystemError.FileNotADirectory(uri)
   }
 
-  writeFile(uri: vscode.Uri, content: Uint8Array, options: { create: boolean; overwrite: boolean }): void {
-    if (!this.scripts) throw vscode.FileSystemError.Unavailable(uri)
+  async readFile(uri: vscode.Uri): Promise<Uint8Array> {
+    var stat = await this.stat(uri)
+    if (stat.type !== vscode.FileType.File) {
+      if (stat.type === vscode.FileType.Directory) {
+        throw vscode.FileSystemError.FileIsADirectory(uri)
+      } else {
+        throw vscode.FileSystemError.FileNotFound(uri)
+      }
+    }
 
-    const parsed = this._parse(uri)
-    if (!parsed) this._noPermission()
+    var info = this._parse(uri.fsPath)!
+    var entry = await this._open(info.file)
+    return entry.contents[info.index][2]
+  }
 
-    const { index, title } = parsed
+  async writeFile(uri: vscode.Uri, content: Uint8Array, options: { create: boolean; overwrite: boolean }): Promise<void> {
+    var info = this._parse(uri.fsPath)
+    if (info == null || info.index < 0) {
+      throw vscode.FileSystemError.NoPermissions(uri)
+    }
 
-    let script = this.scripts[index]
-    if (!script && !options.create) throw vscode.FileSystemError.FileNotFound(uri)
+    var entry = await this._open(info.file)
+    var exist = entry.contents[info.index]
+    if (!options.create && !exist) {
+      throw vscode.FileSystemError.FileNotFound(uri)
+    }
+    if (options.create && !options.overwrite && exist) {
+      throw vscode.FileSystemError.FileExists(uri)
+    }
 
-    if (script && options.create && !options.overwrite) throw vscode.FileSystemError.FileExists(uri)
+    exist = this._ensure(info.file, entry.contents, info.index)
+    this._rename(info.file, entry.contents, info.index, info.title)
+    this._write(info.file, entry.contents, info.index, content)
 
-    if (script) {
-      script[1] = title
-      script[2] = content
+    await this._flush(info.file, entry.contents)
+  }
+
+  async rename(oldUri: vscode.Uri, newUri: vscode.Uri, options: { overwrite: boolean }): Promise<void> {
+    var oldInfo = this._parse(oldUri.fsPath)
+    if (oldInfo == null || oldInfo.index < 0) {
+      throw vscode.FileSystemError.NoPermissions(oldUri)
+    }
+
+    var newInfo = this._parse(newUri.fsPath)
+    if (newInfo == null || newInfo.index < 0) {
+      throw vscode.FileSystemError.NoPermissions(newUri)
+    }
+
+    var oldEntry = await this._open(oldInfo.file)
+    var newEntry = await this._open(newInfo.file)
+
+    var oldExist = oldEntry.contents[oldInfo.index]
+    if (oldExist == null) {
+      throw vscode.FileSystemError.FileNotFound(oldUri)
+    }
+
+    var newExist = this._ensure(oldInfo.file, newEntry.contents, newInfo.index)
+    if (oldExist === newExist) {
+      this._rename(oldInfo.file, oldEntry.contents, oldInfo.index, newInfo.title)
     } else {
-      script = [(Math.random() * 32768) | 0, title, content]
-      this.scripts[index] = script
+      if (!options.overwrite && (newExist[1].length > 0 || newExist[2].length > 0)) {
+        throw vscode.FileSystemError.FileExists(newUri)
+      }
+      this._rename(oldInfo.file, oldEntry.contents, oldInfo.index, '')
+      this._rename(newInfo.file, newEntry.contents, newInfo.index, newInfo.title)
+      this._write(newInfo.file, newEntry.contents, newInfo.index, oldExist[2])
+      this._write(oldInfo.file, oldEntry.contents, oldInfo.index, new Uint8Array())
+    }
+    if (oldInfo.file !== newInfo.file) {
+      this._shrink(oldInfo.file, oldEntry.contents, -1)
+      this._shrink(newInfo.file, newEntry.contents, -1)
+      await this._flush(oldInfo.file, oldEntry.contents)
+      await this._flush(newInfo.file, newEntry.contents)
+    } else {
+      this._shrink(newInfo.file, newEntry.contents, -1)
+      await this._flush(newInfo.file, newEntry.contents)
+    }
+  }
+
+  // No need to handle 'recursive' since it only has one level of depth
+  async delete(uri: vscode.Uri, options: { recursive: boolean }): Promise<void> {
+    var info = this._parse(uri.fsPath)
+    if (info == null || info.index < 0) {
+      throw vscode.FileSystemError.NoPermissions(uri)
     }
 
-    this.flush()
-    this._fireSoon({ type: vscode.FileChangeType.Changed, uri })
+    var entry = await this._open(info.file)
+    var exist = entry.contents[info.index]
+    if (exist == null) return
+
+    if (exist[1] !== info.title) {
+      throw vscode.FileSystemError.FileNotFound(uri)
+    }
+
+    exist[1] = ''
+    exist[2] = new Uint8Array()
+    this._shrink(info.file, entry.contents, info.index)
+
+    await this._flush(info.file, entry.contents)
   }
 
-  rename(oldUri: vscode.Uri, newUri: vscode.Uri, options: { overwrite: boolean }): void {
-    if (!this.scripts) throw vscode.FileSystemError.Unavailable(oldUri)
+  async createDirectory(uri: vscode.Uri): Promise<void> {
+    var info = this._parse(uri.fsPath)
+    if (info == null || info.index >= 0) {
+      throw vscode.FileSystemError.NoPermissions(uri)
+    }
 
-    if (!options.overwrite && this._lookup(newUri, true)) throw vscode.FileSystemError.FileExists(newUri)
+    this._cache.set(info.file, {
+      stat: {
+        type: vscode.FileType.Directory,
+        ctime: Date.now(),
+        mtime: Date.now(),
+        size: 0,
+      },
+      contents: [],
+    })
+    this._fireSoon({
+      type: vscode.FileChangeType.Created,
+      uri: uri,
+    })
 
-    const parsed = this._parse(oldUri)
-    if (!parsed || !this.scripts[parsed.index]) throw vscode.FileSystemError.FileNotFound(oldUri)
-
-    const parsed2 = this._parse(newUri)
-    if (!parsed2) this._noPermission()
-
-    const { index } = parsed
-    const { index: index2, title } = parsed2
-
-    const script = this.scripts[index]!
-    this.scripts[index2] = [script[0], title, script[2]]
-    if (index !== index2) delete this.scripts[index]
-
-    this.flush()
-    this._fireSoon(
-      { type: vscode.FileChangeType.Deleted, uri: oldUri },
-      { type: vscode.FileChangeType.Created, uri: newUri },
-    )
-  }
-
-  delete(uri: vscode.Uri): void {
-    if (!this.scripts) throw vscode.FileSystemError.Unavailable(uri)
-
-    const parsed = this._parse(uri)
-    if (!parsed || !this.scripts[parsed.index]) throw vscode.FileSystemError.FileNotFound(uri)
-
-    const { index } = parsed
-    delete this.scripts[index]
-
-    this.flush()
-    this._fireSoon({ type: vscode.FileChangeType.Deleted, uri })
-  }
-
-  createDirectory(_uri: vscode.Uri): void {
-    throw vscode.FileSystemError.NoPermissions("Can't create directory in 'rgss:/'")
+    await this._flush(info.file, [])
   }
 }
 
-let cache: vscode.Uri | undefined
+async function mount(uri: vscode.Uri | undefined): Promise<void> {
+  if (uri == null) {
+    var uris = await vscode.window.showOpenDialog({
+      canSelectMany: false,
+      openLabel: 'Open',
+      filters: { 'RGSS Scripts': ['rvdata2'] },
+    })
 
-export function activate(context: vscode.ExtensionContext) {
-  console.log('Hello, world!')
-
-  const rgssFS = new RGSS_Scripts()
-  if (cache) {
-    rgssFS.currentFile = cache
-    rgssFS.refresh()
+    if (uris && uris.length > 0) {
+      uri = uris[0]
+    } else {
+      return
+    }
   }
 
-  context.subscriptions.push(vscode.workspace.registerFileSystemProvider('rgss', rgssFS, { isCaseSensitive: false }))
+  var rgssUri = vscode.Uri.parse(`rgss:${uri.fsPath}`)
 
-  context.subscriptions.push(
-    vscode.commands.registerCommand('rgss.open', async function open() {
-      const fileUri = await vscode.window.showOpenDialog({
-        canSelectMany: false,
-        openLabel: 'Open',
-        filters: { 'RGSS Scripts': ['rvdata2'] },
-      })
+  if (vscode.workspace.getWorkspaceFolder(rgssUri) == null) {
+    var folders = vscode.workspace.workspaceFolders || []
+    vscode.workspace.updateWorkspaceFolders(folders.length, 0, {
+      name: path.basename(uri.fsPath),
+      uri: rgssUri,
+    })
+  }
+}
 
-      if (fileUri && fileUri[0]) {
-        rgssFS.currentFile = cache = fileUri[0]
-        await rgssFS.refresh()
-        vscode.workspace.updateWorkspaceFolders(0, 0, { uri: vscode.Uri.parse('rgss:/'), name: 'RGSS Scripts' })
-      }
-    }),
-  )
+function unmount(uri: vscode.Uri): void {
+  var rgssUri = vscode.Uri.parse(`rgss:${uri.fsPath}`)
+
+  var folder = vscode.workspace.getWorkspaceFolder(rgssUri)
+  if (folder == null) {
+    vscode.window.showErrorMessage(`Cannot unmount ${uri.fsPath}: not mounted`)
+    return
+  }
+
+  if (vscode.workspace.workspaceFolders == null) {
+    vscode.window.showErrorMessage(`Cannot unmount ${uri.fsPath}: no workspace folder`)
+    return
+  }
+
+  if (vscode.workspace.workspaceFolders.length === 2) {
+    var other = vscode.workspace.workspaceFolders.find(other => other.index !== folder!.index)
+    vscode.commands.executeCommand('vscode.openFolder', other!.uri, { forceNewWindow: false })
+  } else {
+    vscode.workspace.updateWorkspaceFolders(folder.index, 1)
+  }
+}
+
+export function activate(context: vscode.ExtensionContext): void {
+  console.log('Hello, world!')
+
+  context.subscriptions.push(vscode.workspace.registerFileSystemProvider('rgss', new RGSS_Scripts(), { isCaseSensitive: true }))
+
+  context.subscriptions.push(vscode.commands.registerCommand('rgss.open', mount))
+
+  context.subscriptions.push(vscode.commands.registerCommand('rgss.open2', mount))
+
+  context.subscriptions.push(vscode.commands.registerCommand('rgss.close', unmount))
 }
