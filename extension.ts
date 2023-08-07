@@ -85,40 +85,18 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
     return vscode.Uri.joinPath(vscode.Uri.file(file), this._name(index, arr[index][1]))
   }
 
-  private _ensure(file: string, arr: RGSS_Scripts_Data, index: number): RGSS_Scripts_Data_Item {
-    while (index >= arr.length) {
-      arr.push(this._empty())
-      this._fireSoon({
-        type: vscode.FileChangeType.Created,
-        uri: this._uri(file, arr, index),
-      })
-    }
-    return arr[index]
-  }
-
-  // If 'index' is not the last deleted items, send a 'changed' event
-  // set 'index = -1' to not do this.
-  private _shrink(file: string, arr: RGSS_Scripts_Data, index: number): void {
-    for (var i = arr.length - 1; i >= 0; i--) {
-      var item = arr[i]
+  private _flush(file: string, contents: RGSS_Scripts_Data): Thenable<void> {
+    for (var i = contents.length - 1; i >= 0; i--) {
+      var item = contents[i]
       if (item[1].length > 0 || item[2].length > 0) {
         break
       }
       this._fireSoon({
         type: vscode.FileChangeType.Deleted,
-        uri: this._uri(file, arr, i),
+        uri: this._uri(file, contents, i),
       })
     }
-    arr.length = i + 1
-    if (0 <= index && index < i) {
-      this._fireSoon({
-        type: vscode.FileChangeType.Changed,
-        uri: this._uri(file, arr, index),
-      })
-    }
-  }
-
-  private _flush(file: string, contents: RGSS_Scripts_Data): Thenable<void> {
+    contents.length = i + 1
     var data = contents.map(([magic, title, code]) => [
       magic,
       this._encoder.encode(title).buffer,
@@ -128,26 +106,11 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
     return vscode.workspace.fs.writeFile(vscode.Uri.file(file), u8)
   }
 
-  private _rename(file: string, arr: RGSS_Scripts_Data, index: number, title: string): void {
-    if (arr[index][1] !== title) {
-      this._fireSoon({
-        type: vscode.FileChangeType.Deleted,
-        uri: this._uri(file, arr, index),
-      })
-      arr[index][1] = title
-      this._fireSoon({
-        type: vscode.FileChangeType.Created,
-        uri: this._uri(file, arr, index),
-      })
-    }
-  }
-
-  private _write(file: string, arr: RGSS_Scripts_Data, index: number, content: Uint8Array): void {
-    arr[index][2] = content
-    this._fireSoon({
-      type: vscode.FileChangeType.Changed,
-      uri: this._uri(file, arr, index),
-    })
+  // The `rename` and `delete` command may not really delete the file
+  // and VS Code may not listen to the `onDidChangeFile` event
+  // So we need to refresh the workspace manually
+  private _refreshFilesExplorer(): void {
+    vscode.commands.executeCommand('workbench.files.action.refreshFilesExplorer')
   }
 
   private _emitter = new vscode.EventEmitter<vscode.FileChangeEvent[]>()
@@ -156,6 +119,7 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
 
   readonly onDidChangeFile = this._emitter.event
 
+  // VS Code never calls this method... why? :(
   watch(uri: vscode.Uri, options: any): vscode.Disposable {
     return new vscode.Disposable(() => void 0)
   }
@@ -169,9 +133,6 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
 
     this._fireSoonHandle = setTimeout(() => {
       this._emitter.fire(this._bufferedEvents)
-      for (const { type, uri } of this._bufferedEvents) {
-        console.log(vscode.FileChangeType[type], ' ', uri.path)
-      }
       this._bufferedEvents.length = 0
     }, 5)
   }
@@ -246,9 +207,19 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
       throw vscode.FileSystemError.FileExists(uri)
     }
 
-    exist = this._ensure(info.file, entry.contents, info.index)
-    this._rename(info.file, entry.contents, info.index, info.title)
-    this._write(info.file, entry.contents, info.index, content)
+    while (info.index > entry.contents.length) {
+      entry.contents.push(this._empty())
+      this._fireSoon({
+        type: vscode.FileChangeType.Created,
+        uri: this._uri(info.file, entry.contents, info.index),
+      })
+    }
+    var type = info.index === entry.contents.length ? vscode.FileChangeType.Created : vscode.FileChangeType.Changed
+    var item = this._empty() || entry.contents[info.index]
+    item[1] = info.title
+    item[2] = content
+    entry.contents[info.index] = item
+    this._fireSoon({ type, uri: this._uri(info.file, entry.contents, info.index) })
 
     await this._flush(info.file, entry.contents)
   }
@@ -264,34 +235,87 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
       throw vscode.FileSystemError.NoPermissions(newUri)
     }
 
-    var oldEntry = await this._open(oldInfo.file)
-    var newEntry = await this._open(newInfo.file)
+    // Should it allow rename to another Scripts.rvdata2 file?
+    if (oldInfo.file !== newInfo.file) {
+      throw vscode.FileSystemError.NoPermissions(newUri)
+    }
 
-    var oldExist = oldEntry.contents[oldInfo.index]
-    if (oldExist == null) {
+    var file = oldInfo.file
+    var entry = await this._open(file)
+    var exist = entry.contents[oldInfo.index]
+    if (exist == null || exist[1] !== oldInfo.title) {
       throw vscode.FileSystemError.FileNotFound(oldUri)
     }
 
-    var newExist = this._ensure(oldInfo.file, newEntry.contents, newInfo.index)
-    if (oldExist === newExist) {
-      this._rename(oldInfo.file, oldEntry.contents, oldInfo.index, newInfo.title)
-    } else {
-      if (!options.overwrite && (newExist[1].length > 0 || newExist[2].length > 0)) {
-        throw vscode.FileSystemError.FileExists(newUri)
-      }
-      this._rename(oldInfo.file, oldEntry.contents, oldInfo.index, '')
-      this._rename(newInfo.file, newEntry.contents, newInfo.index, newInfo.title)
-      this._write(newInfo.file, newEntry.contents, newInfo.index, oldExist[2])
-      this._write(oldInfo.file, oldEntry.contents, oldInfo.index, new Uint8Array())
+    // these events may need to be fired later
+    var events: vscode.FileChangeEvent[] = []
+
+    // '001_Title.rb' -> '001_Title2.rb'
+    if (oldInfo.index === newInfo.index) {
+      this._fireSoon({
+        type: vscode.FileChangeType.Deleted,
+        uri: this._uri(file, entry.contents, oldInfo.index),
+      })
+      exist[1] = newInfo.title
+      this._fireSoon({
+        type: vscode.FileChangeType.Created,
+        uri: this._uri(file, entry.contents, oldInfo.index),
+      })
     }
-    if (oldInfo.file !== newInfo.file) {
-      this._shrink(oldInfo.file, oldEntry.contents, -1)
-      this._shrink(newInfo.file, newEntry.contents, -1)
-      await this._flush(oldInfo.file, oldEntry.contents)
-      await this._flush(newInfo.file, newEntry.contents)
-    } else {
-      this._shrink(newInfo.file, newEntry.contents, -1)
-      await this._flush(newInfo.file, newEntry.contents)
+
+    // '001_Title.rb' -> '002_Title2.rb'
+    else {
+      var code = exist[2]
+
+      this._fireSoon({
+        type: vscode.FileChangeType.Deleted,
+        uri: this._uri(file, entry.contents, oldInfo.index),
+      })
+      exist[1] = ''
+      exist[2] = new Uint8Array()
+      if (oldInfo.index < entry.contents.length) {
+        events.push({
+          type: vscode.FileChangeType.Created,
+          uri: this._uri(file, entry.contents, oldInfo.index),
+        })
+      }
+
+      while (newInfo.index > entry.contents.length) {
+        entry.contents.push(this._empty())
+        this._fireSoon({
+          type: vscode.FileChangeType.Created,
+          uri: this._uri(file, entry.contents, newInfo.index),
+        })
+      }
+      if (newInfo.index === entry.contents.length) {
+        var item = this._empty()
+        item[1] = newInfo.title
+        item[2] = code
+        entry.contents[newInfo.index] = item
+        this._fireSoon({
+          type: vscode.FileChangeType.Created,
+          uri: this._uri(file, entry.contents, newInfo.index),
+        })
+      } else {
+        events.push({
+          type: vscode.FileChangeType.Deleted,
+          uri: this._uri(file, entry.contents, newInfo.index),
+        })
+        var item = entry.contents[newInfo.index]
+        item[1] = newInfo.title
+        item[2] = code
+        this._fireSoon({
+          type: vscode.FileChangeType.Created,
+          uri: this._uri(file, entry.contents, newInfo.index),
+        })
+      }
+    }
+
+    await this._flush(file, entry.contents)
+
+    if (events.length > 0) {
+      this._fireSoon(...events)
+      this._refreshFilesExplorer()
     }
   }
 
@@ -304,17 +328,17 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
 
     var entry = await this._open(info.file)
     var exist = entry.contents[info.index]
-    if (exist == null) return
+    if (exist == null) return // Already deleted
 
     if (exist[1] !== info.title) {
       throw vscode.FileSystemError.FileNotFound(uri)
     }
-
     exist[1] = ''
     exist[2] = new Uint8Array()
-    this._shrink(info.file, entry.contents, info.index)
 
     await this._flush(info.file, entry.contents)
+
+    this._refreshFilesExplorer()
   }
 
   async createDirectory(uri: vscode.Uri): Promise<void> {
