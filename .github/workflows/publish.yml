@@ -32,4 +32,4 @@ jobs:
         run: |
           file=$(realpath $(ls -t *.vsix | head -1))
           vsce publish -i $file -p ${{ secrets.VSCE_TOKEN }}
-          gh release create '${{ github.ref_name }}' $file -n "See [Changelog](https://github.com/rrnide/vscode-rgss-scripts/blob/main/CHANGELOG.md) for details." $file
+          gh release create '${{ github.ref_name }}' -n "See [Changelog](https://github.com/rrnide/vscode-rgss-scripts/blob/main/CHANGELOG.md) for details." $file
