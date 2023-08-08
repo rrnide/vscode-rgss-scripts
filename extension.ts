@@ -1,9 +1,8 @@
-// TODO: remove them for browser build
-import * as path from 'path'
-import * as zlib from 'zlib'
-
 import * as vscode from 'vscode'
 import * as marshal from '@hyrious/marshal'
+
+declare function inflate(data: ArrayBuffer): Promise<Uint8Array>
+declare function deflate(data: Uint8Array): Promise<ArrayBuffer>
 
 type RGSS_Scripts_Data_Item = [magic: number, title: string, code: Uint8Array]
 type RGSS_Scripts_Data = RGSS_Scripts_Data_Item[]
@@ -56,14 +55,18 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
     var uri = vscode.Uri.file(file)
     var stat = await vscode.workspace.fs.stat(uri) // throws file not found error
     var u8 = await vscode.workspace.fs.readFile(uri)
+    var buffer = u8.buffer
+    if (u8.byteOffset !== 0) {
+      buffer = buffer.slice(u8.byteOffset)
+    }
 
     // https://github.com/hyrious/rvdata2-textconv/blob/main/index.js
-    var data = marshal.load(u8.buffer, { decodeString: false })
+    var data = marshal.load(buffer, { decodeString: false })
     var contents: RGSS_Scripts_Data = []
     for (var i = 0; i < data.length; i++) {
       var [magic, title_, code_] = data[i]
       var title = this._decoder.decode(title_)
-      var code = new Uint8Array(zlib.inflateSync(code_)) // TODO: use pako in browser
+      var code = new Uint8Array(await inflate(code_))
       contents.push([magic, title, code])
     }
 
@@ -85,7 +88,7 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
     return vscode.Uri.joinPath(vscode.Uri.file(file), this._name(index, arr[index][1]))
   }
 
-  private _flush(file: string, contents: RGSS_Scripts_Data): Thenable<void> {
+  private async _flush(file: string, contents: RGSS_Scripts_Data): Promise<void> {
     for (var i = contents.length - 1; i >= 0; i--) {
       var item = contents[i]
       if (item[1].length > 0 || item[2].length > 0) {
@@ -97,13 +100,18 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
       })
     }
     contents.length = i + 1
-    var data = contents.map(([magic, title, code]) => [
-      magic,
-      this._encoder.encode(title).buffer,
-      new Uint8Array(zlib.deflateSync(code)).buffer,
-    ])
+    var data: [number, ArrayBuffer, ArrayBuffer][] = Array(contents.length)
+    for (var i = 0; i < contents.length; i++) {
+      var [magic, title, code] = contents[i]
+      data[i] = [magic, this._encoder.encode(title).buffer, new Uint8Array(await deflate(code)).buffer]
+    }
     var u8 = new Uint8Array(marshal.dump(data))
-    return vscode.workspace.fs.writeFile(vscode.Uri.file(file), u8)
+    var entry = this._cache.get(file)
+    if (entry) {
+      entry.stat.mtime = Date.now()
+      entry.stat.size = contents.length
+    }
+    await vscode.workspace.fs.writeFile(vscode.Uri.file(file), u8)
   }
 
   // The `rename` and `delete` command may not really delete the file
@@ -284,7 +292,7 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
         entry.contents.push(this._empty())
         this._fireSoon({
           type: vscode.FileChangeType.Created,
-          uri: this._uri(file, entry.contents, newInfo.index),
+          uri: this._uri(file, entry.contents, entry.contents.length - 1),
         })
       }
       if (newInfo.index === entry.contents.length) {
@@ -365,6 +373,15 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
   }
 }
 
+function basename(p: string): string {
+  if (process.platform === 'win32') {
+    p = p.replace(/\\/g, '/')
+  }
+  var index = p.lastIndexOf('/')
+  if (index < 0) return p
+  return p.slice(index + 1)
+}
+
 async function mount(uri: vscode.Uri | undefined): Promise<void> {
   if (uri == null) {
     var uris = await vscode.window.showOpenDialog({
@@ -385,13 +402,22 @@ async function mount(uri: vscode.Uri | undefined): Promise<void> {
   if (vscode.workspace.getWorkspaceFolder(rgssUri) == null) {
     var folders = vscode.workspace.workspaceFolders || []
     vscode.workspace.updateWorkspaceFolders(folders.length, 0, {
-      name: path.basename(uri.fsPath),
+      name: basename(uri.fsPath),
       uri: rgssUri,
     })
   }
 }
 
-function unmount(uri: vscode.Uri): void {
+function unmount(uri: vscode.Uri | undefined): void {
+  if (uri == null) {
+    var folder = vscode.workspace.workspaceFolders?.find(folder => folder.uri.scheme === 'rgss')
+    if (folder == null) {
+      vscode.window.showErrorMessage('No mounted Scripts.rvdata2 file')
+      return
+    }
+    uri = folder.uri
+  }
+
   var rgssUri = vscode.Uri.parse(`rgss:${uri.fsPath}`)
 
   var folder = vscode.workspace.getWorkspaceFolder(rgssUri)
@@ -414,13 +440,9 @@ function unmount(uri: vscode.Uri): void {
 }
 
 export function activate(context: vscode.ExtensionContext): void {
-  console.log('Hello, world!')
-
   context.subscriptions.push(vscode.workspace.registerFileSystemProvider('rgss', new RGSS_Scripts(), { isCaseSensitive: true }))
 
   context.subscriptions.push(vscode.commands.registerCommand('rgss.open', mount))
-
-  context.subscriptions.push(vscode.commands.registerCommand('rgss.open2', mount))
 
   context.subscriptions.push(vscode.commands.registerCommand('rgss.close', unmount))
 }

@@ -15,8 +15,8 @@
   "browser": "./bundle.js",
   "scripts": {
     "clean": "rimraf extension.js bundle.js",
-    "compile": "esbuild extension.ts --bundle --platform=node --packages=external --outfile=extension.js",
-    "compile:browser": "esbuild extension.ts --bundle --format=cjs --external:vscode --outfile=bundle.js --minify --sourcemap --sources-content=false",
+    "compile": "esbuild extension.ts --inject:zlib.js --bundle --platform=node --packages=external --outfile=extension.js",
+    "compile:browser": "esbuild extension.ts --inject:zlib-browser.js --bundle --format=cjs --external:vscode --outfile=bundle.js --minify --sourcemap --sources-content=false",
     "vscode:prepublish": "npm run compile"
   },
   "contributes": {
@@ -27,37 +27,17 @@
         "category": "RGSS Scripts"
       },
       {
-        "command": "rgss.open2",
-        "title": "Open this file",
-        "category": "RGSS Scripts"
-      },
-      {
         "command": "rgss.close",
         "title": "Close Scripts.rvdata2",
         "category": "RGSS Scripts"
       }
     ],
     "menus": {
-      "explorer/context": [
-        {
-          "when": "resourceLangId == rvdata2 && !explorerResourceIsRoot",
-          "command": "rgss.open",
-          "group": "navigation"
-        },
-        {
-          "when": "resourceLangId == rvdata2 && explorerResourceIsRoot",
-          "command": "rgss.close",
-          "group": "navigation"
-        }
-      ],
       "commandPalette": [
         {
-          "when": "false",
-          "command": "rgss.close"
-        },
-        {
-          "when": "editorLangId == rvdata2",
-          "command": "rgss.open2"
+          "when": "explorerResourceIsRoot",
+          "command": "rgss.close",
+          "group": "navigation"
         }
       ]
     }
@@ -69,7 +49,8 @@
     "onStartupFinished"
   ],
   "dependencies": {
-    "@hyrious/marshal": "^0.2.5"
+    "@hyrious/marshal": "^0.2.5",
+    "pako": "^2.1.0"
   },
   "devDependencies": {
     "@hyrious/rimraf": "^0.1.0",
