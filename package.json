@@ -17,7 +17,7 @@
     "clean": "rimraf extension.js bundle.js",
     "compile": "esbuild extension.ts --inject:zlib.js --bundle --platform=node --packages=external --outfile=extension.js",
     "compile:browser": "esbuild extension.ts --inject:zlib-browser.js --bundle --format=cjs --external:vscode --outfile=bundle.js --minify --sourcemap --sources-content=false",
-    "vscode:prepublish": "npm run compile"
+    "vscode:prepublish": "npm run compile && npm run compile:browser"
   },
   "contributes": {
     "commands": [
