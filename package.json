@@ -42,6 +42,12 @@
         "title": "Delete",
         "category": "RGSS Scripts",
         "icon": "$(trash)"
+      },
+      {
+        "command": "rgss.rename",
+        "title": "Rename",
+        "category": "RGSS Scripts",
+        "icon": "$(edit)"
       }
     ],
     "menus": {
@@ -53,6 +59,11 @@
         },
         {
           "command": "rgss.delete",
+          "when": "view == rgss.scripts",
+          "group": "inline"
+        },
+        {
+          "command": "rgss.rename",
           "when": "view == rgss.scripts",
           "group": "inline"
         }
@@ -75,8 +86,7 @@
       "explorer": [
         {
           "id": "rgss.scripts",
-          "name": "Scripts",
-          "when": "explorerResourceIsRoot"
+          "name": "Scripts"
         }
       ]
     }

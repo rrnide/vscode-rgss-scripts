@@ -103,17 +103,6 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
   }
 
   private async _flush(file: string, contents: RGSS_Scripts_Data): Promise<void> {
-    for (var i = contents.length - 1; i >= 0; i--) {
-      var item = contents[i]
-      if (item[1].length > 0 || item[2].length > 0) {
-        break
-      }
-      this._fireSoon({
-        type: vscode.FileChangeType.Deleted,
-        uri: this._uri(file, contents, i),
-      })
-    }
-    contents.length = i + 1
     var data: [number, ArrayBuffer, ArrayBuffer][] = Array(contents.length)
     for (var i = 0; i < contents.length; i++) {
       var [magic, title, code] = contents[i]
@@ -356,8 +345,13 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
     if (exist[1] !== info.title) {
       throw vscode.FileSystemError.FileNotFound(uri)
     }
-    exist[1] = ''
-    exist[2] = new Uint8Array()
+
+    if (info.index === entry.contents.length - 1) {
+      entry.contents.pop()
+    } else {
+      exist[1] = ''
+      exist[2] = new Uint8Array()
+    }
 
     await this._flush(info.file, entry.contents)
 
@@ -401,7 +395,8 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
   async ni({ tree, index }: ScriptItem): Promise<void> {
     var entry = await this._open(tree.file)
     entry.contents.splice(index, 0, this._empty())
-    await this._flush(tree.file, entry.contents) // shrinks data
+
+    await this._flush(tree.file, entry.contents)
     this._refreshFilesExplorer()
     tree.refresh()
   }
@@ -409,7 +404,39 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
   async rm({ tree, index }: ScriptItem): Promise<void> {
     // Should we ask for confirmation?
     var entry = await this._open(tree.file)
+    if (index === entry.contents.length) {
+      vscode.window.showInformationMessage('Cannot delete the last item')
+      return
+    }
     entry.contents.splice(index, 1)
+
+    await this._flush(tree.file, entry.contents)
+    this._refreshFilesExplorer()
+    tree.refresh()
+  }
+
+  // Cannot add an inline rename input box, see https://github.com/microsoft/vscode/issues/97190
+  async mv(treeItem: ScriptItem): Promise<void> {
+    var { tree, index } = treeItem
+    var entry = await this._open(tree.file)
+    var item = entry.contents[index] || this._empty()
+    var newTitle = await vscode.window.showInputBox({
+      prompt: 'Edit title',
+      value: item[1],
+      validateInput(title) {
+        if (title.includes('/')) {
+          return 'Title cannot contain "/"'
+        }
+        return null
+      },
+    })
+    if (newTitle == null || newTitle === item[1]) return
+    item[1] = newTitle
+    if (index === entry.contents.length) {
+      entry.contents.push(item)
+    }
+
+    await this._flush(tree.file, entry.contents)
     this._refreshFilesExplorer()
     tree.refresh()
   }
@@ -533,6 +560,12 @@ function unmount(uri: vscode.Uri | undefined): void {
   } else {
     vscode.workspace.updateWorkspaceFolders(folder.index, 1)
   }
+
+  for (var tab of vscode.window.tabGroups.all.map(e => e.tabs).flat()) {
+    if (tab.input instanceof vscode.TabInputText && tab.input.uri.fsPath === uri.fsPath) {
+      vscode.window.tabGroups.close(tab)
+    }
+  }
 }
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -551,4 +584,5 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(vscode.commands.registerCommand('rgss.insert', item => fs.ni(item)))
   context.subscriptions.push(vscode.commands.registerCommand('rgss.delete', item => fs.rm(item)))
+  context.subscriptions.push(vscode.commands.registerCommand('rgss.rename', item => fs.mv(item)))
 }
