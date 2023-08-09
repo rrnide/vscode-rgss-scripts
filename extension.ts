@@ -9,7 +9,6 @@ type RGSS_Scripts_Data = RGSS_Scripts_Data_Item[]
 type CacheEntry = { stat: vscode.FileStat; contents: RGSS_Scripts_Data }
 
 // Simulate a virtual FS whose path looks like rgss:/path/to/Scripts.rvdata2/001_Title.rb
-// Note: use 'vscode.workspace.fs' to access the system FS (works in browser too)
 export class RGSS_Scripts implements vscode.FileSystemProvider {
   private readonly _encoder = new TextEncoder()
   private readonly _decoder = new TextDecoder()
@@ -19,7 +18,7 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
 
   // p = "/path/to/Scripts.rvdata2/001_Title.rb"
   // or "C:\\path\\to\\Scripts.rvdata2\\001_Title.rb" on Windows
-  private _parse(p: string): { file: string; index: number; title: string } | undefined {
+  static parse(p: string): { file: string; index: number; title: string } | undefined {
     if (process.platform === 'win32') {
       p = p.replace(/\\/g, '/')
     }
@@ -46,6 +45,21 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
       title = title.slice(0, -3)
     }
     return { file, index, title }
+  }
+
+  static name_(index: number, title: string): string {
+    return `${index.toString().padStart(3, '0')}_${title}.rb`
+  }
+
+  static uri(file: string, index: number, title: string): vscode.Uri {
+    return vscode.Uri.from({
+      scheme: 'rgss',
+      path: vscode.Uri.joinPath(vscode.Uri.file(file), this.name_(index, title)).path,
+    })
+  }
+
+  private _parse(p: string): { file: string; index: number; title: string } | undefined {
+    return RGSS_Scripts.parse(p)
   }
 
   private async _open(file: string): Promise<CacheEntry> {
@@ -77,7 +91,7 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
   }
 
   private _name(index: number, title: string): string {
-    return `${index.toString().padStart(3, '0')}_${title}.rb`
+    return RGSS_Scripts.name_(index, title)
   }
 
   private _empty(): RGSS_Scripts_Data_Item {
@@ -85,7 +99,7 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
   }
 
   private _uri(file: string, arr: RGSS_Scripts_Data, index: number): vscode.Uri {
-    return vscode.Uri.joinPath(vscode.Uri.file(file), this._name(index, arr[index][1]))
+    return RGSS_Scripts.uri(file, index, arr[index][1])
   }
 
   private async _flush(file: string, contents: RGSS_Scripts_Data): Promise<void> {
@@ -118,7 +132,8 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
   // and VS Code may not listen to the `onDidChangeFile` event
   // So we need to refresh the workspace manually
   private _refreshFilesExplorer(): void {
-    vscode.commands.executeCommand('workbench.files.action.refreshFilesExplorer')
+    if (vscode.workspace.workspaceFolders?.some(folder => folder.uri.scheme === 'rgss'))
+      vscode.commands.executeCommand('workbench.files.action.refreshFilesExplorer')
   }
 
   private _emitter = new vscode.EventEmitter<vscode.FileChangeEvent[]>()
@@ -371,6 +386,87 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
 
     await this._flush(info.file, [])
   }
+
+  // Below are APIs used by the tree view
+  async ls(file: string): Promise<string[] | null> {
+    try {
+      var entry = await this._open(file)
+      return entry.contents.map(e => e[1])
+    } catch {
+      return null
+    }
+  }
+
+  // New-Item, get it? :P
+  async ni({ tree, index }: ScriptItem): Promise<void> {
+    var entry = await this._open(tree.file)
+    entry.contents.splice(index, 0, this._empty())
+    await this._flush(tree.file, entry.contents) // shrinks data
+    this._refreshFilesExplorer()
+    tree.refresh()
+  }
+
+  async rm({ tree, index }: ScriptItem): Promise<void> {
+    // Should we ask for confirmation?
+    var entry = await this._open(tree.file)
+    entry.contents.splice(index, 1)
+    this._refreshFilesExplorer()
+    tree.refresh()
+  }
+}
+
+class ScriptItem extends vscode.TreeItem {
+  constructor(readonly tree: RGSS_Scripts_Tree, readonly index: number, readonly title: string, readonly uri: vscode.Uri | null) {
+    super(title, vscode.TreeItemCollapsibleState.None)
+  }
+
+  // "when": "viewItem == 'rgss-script'"
+  override contextValue = 'rgss-script'
+
+  override command: vscode.Command | undefined = this.uri
+    ? {
+        command: 'vscode.open',
+        title: 'Open Script',
+        arguments: [this.uri],
+      }
+    : void 0
+}
+
+export class RGSS_Scripts_Tree implements vscode.TreeDataProvider<ScriptItem> {
+  private _onDidChangeTreeData = new vscode.EventEmitter<ScriptItem | null>()
+  readonly onDidChangeTreeData = this._onDidChangeTreeData.event
+
+  constructor(readonly fs: RGSS_Scripts, readonly file: string) {}
+
+  refresh(): void {
+    this._onDidChangeTreeData.fire(null)
+  }
+
+  getTreeItem(element: ScriptItem): vscode.TreeItem {
+    return element
+  }
+
+  async getChildren(element?: ScriptItem): Promise<ScriptItem[] | null> {
+    // No need to handle 'element' since it only has one level of depth
+    if (element) return null
+
+    try {
+      var titles = await this.fs.ls(this.file)
+      if (titles == null) return null
+
+      var result: ScriptItem[] = []
+      for (var i = 0; i < titles.length; ++i) {
+        var title = titles[i]
+        result.push(new ScriptItem(this, i, title, RGSS_Scripts.uri(this.file, i, title)))
+      }
+      // Append a 'null' item like RPG Maker, so that you can append new file to the end
+      result.push(new ScriptItem(this, i, '', null))
+      return result
+    } catch {
+      vscode.window.showInformationMessage('No mounted Scripts.rvdata2 file')
+      return null
+    }
+  }
 }
 
 function basename(p: string): string {
@@ -440,9 +536,19 @@ function unmount(uri: vscode.Uri | undefined): void {
 }
 
 export function activate(context: vscode.ExtensionContext): void {
-  context.subscriptions.push(vscode.workspace.registerFileSystemProvider('rgss', new RGSS_Scripts(), { isCaseSensitive: true }))
+  var fs = new RGSS_Scripts()
+
+  var p = vscode.workspace.workspaceFolders?.find(e => e.uri.scheme === 'rgss')?.uri.fsPath
+  var info = p && RGSS_Scripts.parse(p)
+  if (info) {
+    context.subscriptions.push(vscode.window.registerTreeDataProvider('rgss.scripts', new RGSS_Scripts_Tree(fs, info.file)))
+  }
+
+  context.subscriptions.push(vscode.workspace.registerFileSystemProvider('rgss', fs, { isCaseSensitive: true }))
 
   context.subscriptions.push(vscode.commands.registerCommand('rgss.open', mount))
-
   context.subscriptions.push(vscode.commands.registerCommand('rgss.close', unmount))
+
+  context.subscriptions.push(vscode.commands.registerCommand('rgss.insert', item => fs.ni(item)))
+  context.subscriptions.push(vscode.commands.registerCommand('rgss.delete', item => fs.rm(item)))
 }

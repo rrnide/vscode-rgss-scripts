@@ -30,14 +30,53 @@
         "command": "rgss.close",
         "title": "Close Scripts.rvdata2",
         "category": "RGSS Scripts"
+      },
+      {
+        "command": "rgss.insert",
+        "title": "New Script",
+        "category": "RGSS Scripts",
+        "icon": "$(file-add)"
+      },
+      {
+        "command": "rgss.delete",
+        "title": "Delete",
+        "category": "RGSS Scripts",
+        "icon": "$(trash)"
       }
     ],
     "menus": {
+      "view/item/context": [
+        {
+          "command": "rgss.insert",
+          "when": "view == rgss.scripts",
+          "group": "inline"
+        },
+        {
+          "command": "rgss.delete",
+          "when": "view == rgss.scripts",
+          "group": "inline"
+        }
+      ],
       "commandPalette": [
         {
           "when": "explorerResourceIsRoot",
           "command": "rgss.close",
           "group": "navigation"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "rgss.scripts",
+        "contents": "[Open Scripts.rvdata2](command:rgss.open)"
+      }
+    ],
+    "views": {
+      "explorer": [
+        {
+          "id": "rgss.scripts",
+          "name": "Scripts",
+          "when": "explorerResourceIsRoot"
         }
       ]
     }
