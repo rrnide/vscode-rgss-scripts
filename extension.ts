@@ -562,7 +562,7 @@ function unmount(uri: vscode.Uri | undefined): void {
   }
 
   for (var tab of vscode.window.tabGroups.all.map(e => e.tabs).flat()) {
-    if (tab.input instanceof vscode.TabInputText && tab.input.uri.fsPath === uri.fsPath) {
+    if (tab.input instanceof vscode.TabInputText && RGSS_Scripts.parse(tab.input.uri.fsPath)?.file === uri.fsPath) {
       vscode.window.tabGroups.close(tab)
     }
   }
