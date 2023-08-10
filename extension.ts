@@ -468,6 +468,114 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
 
     vscode.commands.executeCommand('vscode.open', this._uri(tree.file, entry.contents, index))
   }
+
+  // ripgrep
+  private _indices(line: string, text: string): number[] {
+    var result: number[] = []
+    var index = line.indexOf(text)
+    while (index >= 0) {
+      result.push(index)
+      index = line.indexOf(text, index + 1)
+    }
+    return result
+  }
+
+  async rg(file: string, text: string): Promise<GrepLine[]> {
+    var entry = await this._open(file)
+    var cache: string[][] = Array(entry.contents.length) // { [index]: lines }
+    var collect: { index: number; line_: number; columns_: number[] }[] = []
+    for (var i = 0; i < entry.contents.length; ++i) {
+      var [_, _title, code_] = entry.contents[i]
+      var lines = this._decoder.decode(code_).split(/\r\n|\n|\r/g)
+      cache[i] = lines
+      for (var j = 0; j < lines.length; ++j) {
+        var line = lines[j]
+        var indices = this._indices(line, text)
+        if (indices.length > 0) {
+          // Note: [line_] and [columns_] are 0-based here
+          collect.push({ index: i, line_: j, columns_: indices })
+        }
+      }
+    }
+
+    var result: GrepLine[] = []
+    result.push({ type: 'message', text: `Searching ${entry.contents.length} files for "${text}"`, indices: void 0 })
+    result.push({ type: 'message', text: '', indices: void 0 })
+
+    if (collect.length === 0) {
+      result.push({ type: 'message', text: '0 matches', indices: void 0 })
+      return result
+    }
+
+    var max_line_ = -1
+    for (var { line_ } of collect) {
+      max_line_ = Math.max(max_line_, line_)
+    }
+    var max_line_width = String(max_line_).length + 2
+    var render_line = function render_line(line: number | string, text: string, match: boolean): string {
+      return `${String(typeof line === 'number' ? line + 1 : line).padStart(max_line_width, ' ')}${match ? ':' : ' '} ${text}`
+    }
+    var last_index = -1
+    var last_line_ = -1
+    for (var i = 0; i < collect.length; ++i) {
+      var { index, line_, columns_ } = collect[i]
+      if (index !== last_index) {
+        if (last_line_ >= 0) {
+          var last_lines = cache[last_index]
+          for (var line__ = last_line_ + 1; line__ < Math.min(last_lines.length, last_line_ + 3); ++line__) {
+            result.push({ type: 'context', text: render_line(line__, last_lines[line__], false), indices: void 0 })
+          }
+          last_line_ = -1
+          result.push({ type: 'message', text: '', indices: void 0 })
+        }
+
+        last_index = index
+        var [_, title] = entry.contents[index]
+        result.push({ type: 'title', text: this._name(index, title) + ':', indices: void 0 })
+      }
+      if (last_line_ >= 0) {
+        for (var line__ = last_line_ + 1; line__ < Math.min(line_, last_line_ + 3, Math.max(0, line_ - 2)); ++line__) {
+          result.push({ type: 'context', text: render_line(line__, cache[index][line__], false), indices: void 0 })
+        }
+        // last_line_ = line__
+      }
+      for (var line__ = Math.max(0, line_ - 2); line__ < line_; ++line__) {
+        if (last_line_ < line__) {
+          if (last_line_ >= 0 && last_line_ + 1 < line__) {
+            result.push({ type: 'context', text: render_line('..', '', false), indices: void 0 })
+          }
+          last_line_ = line__
+          result.push({ type: 'context', text: render_line(line__, cache[index][line__], false), indices: void 0 })
+        }
+      }
+      result.push({
+        type: 'match',
+        text: render_line(line_, cache[index][line_], true),
+        indices: columns_.map(e => [e, e + text.length]),
+      })
+      last_line_ = line_
+    }
+    if (last_line_ >= 0) {
+      var last_lines = cache[last_index]
+      for (var line__ = last_line_ + 1; line__ < Math.min(last_lines.length, last_line_ + 3); ++line__) {
+        result.push({ type: 'context', text: render_line(line__, last_lines[line__], false), indices: void 0 })
+      }
+      last_line_ = -1
+    }
+
+    var matches_text = collect.length <= 1 ? `${collect.length} match` : `${collect.length} matches`
+    var files_count = new Set(collect.map(e => e.index)).size
+    var files_text = files_count <= 1 ? `${files_count} file` : `${files_count} files`
+    result.push({ type: 'message', text: '', indices: void 0 })
+    result.push({ type: 'message', text: `${matches_text} across ${files_text}`, indices: void 0 })
+    return result
+  }
+}
+
+interface GrepLine {
+  type: 'title' | 'context' | 'match' | 'message'
+  text: string // '001_Title.rb' | '  1  def initialize' | '  2: matched code' <- notice the ':'
+  indices?: [number, number][] // [start, end]
 }
 
 class ScriptItem extends vscode.TreeItem {
@@ -616,9 +724,7 @@ function dirname(p: string): string {
 
 // file = "/path/to/Scripts.rvdata2"
 async function run(file?: string): Promise<void> {
-  if (file == null) {
-    return
-  }
+  if (file == null) return
   if (process.platform !== 'win32') {
     vscode.window.showErrorMessage('Only Windows is supported to run RPG Maker games')
     return
@@ -650,6 +756,98 @@ function reveal(context: { tree: RGSS_Scripts_Tree; viewer: vscode.TreeView<Scri
   item && !context.viewer.selection.includes(item) && context.viewer.reveal(item, { select: true })
 }
 
+async function pick(fs: RGSS_Scripts, file?: string): Promise<void> {
+  if (file == null) return
+  var files = await fs.readDirectory(vscode.Uri.file(file))
+  var items = files.map(([name]) => '$(file) ' + name)
+  var selected = await vscode.window.showQuickPick(items, {
+    canPickMany: false,
+    placeHolder: 'Search files by name',
+  })
+  if (selected) {
+    var path = vscode.Uri.joinPath(vscode.Uri.file(file), selected.slice(8)).path
+    vscode.commands.executeCommand('vscode.open', vscode.Uri.from({ scheme: 'rgss', path }))
+  }
+}
+
+export class RGSS_Scripts_Search_Result implements vscode.TextDocumentContentProvider {
+  private _onDidChange = new vscode.EventEmitter<vscode.Uri>()
+  readonly onDidChange = this._onDidChange.event
+
+  private static _id = 0
+  static nextId() {
+    return RGSS_Scripts_Search_Result._id++
+  }
+  private static _cache = new Map<number, string>()
+  static get(id: number): string | undefined {
+    return RGSS_Scripts_Search_Result._cache.get(id)
+  }
+  static set(id: number, text: string): void {
+    RGSS_Scripts_Search_Result._cache.set(id, text)
+  }
+  static delete(id: number): void {
+    RGSS_Scripts_Search_Result._cache.delete(id)
+  }
+
+  setAndGetNextId(text: string) {
+    var id = RGSS_Scripts_Search_Result.nextId()
+    RGSS_Scripts_Search_Result.set(id, text)
+    return id
+  }
+
+  // uri = 'rgss-search:0/text'
+  provideTextDocumentContent(uri: vscode.Uri): string | undefined {
+    var [id] = uri.path.split('/')
+    return RGSS_Scripts_Search_Result._cache.get(parseInt(id))
+  }
+}
+
+export class RGSS_Scripts_Search_Result_Syntax implements vscode.DocumentSemanticTokensProvider {
+  static legend = new vscode.SemanticTokensLegend(['enum', 'number', 'function', 'comment'])
+
+  provideDocumentSemanticTokens(doc: vscode.TextDocument): vscode.ProviderResult<vscode.SemanticTokens> {
+    var [id] = doc.uri.path.split('/')
+    var text = RGSS_Scripts_Search_Result.get(parseInt(id))
+    if (text == null) return
+
+    var builder = new vscode.SemanticTokensBuilder(RGSS_Scripts_Search_Result_Syntax.legend)
+    this._matchAll(builder, /^([^ ].*):$/g, text, 'enum')
+    this._matchAll(builder, /^ +([0-9]+) /g, text, 'number')
+    this._matchAll(builder, /^ +([0-9]+):.*/g, text, 'function')
+    return builder.build()
+  }
+
+  private _matchAll(builder: vscode.SemanticTokensBuilder, regex: RegExp, text: string, scope: string): void {
+    var lines = text.split(/\r\n|\n|\r/g)
+    for (var i = 0; i < lines.length; ++i) {
+      var line = lines[i]
+      var match: RegExpExecArray | null
+      while ((match = regex.exec(line))) {
+        var start = match.index
+        var end = match.index + match[0].length
+        builder.push(new vscode.Range(i, start, i, end), scope)
+      }
+    }
+  }
+}
+
+async function search(fs: RGSS_Scripts, file: string | undefined, search_result: RGSS_Scripts_Search_Result): Promise<void> {
+  if (file == null) return
+  var text = await vscode.window.showInputBox({ prompt: 'Search' })
+  if (text == null) return
+  var items = await fs.rg(file, text)
+  var content = ''
+  for (var e of items) content += e.text + '\n'
+  var id = search_result.setAndGetNextId(content)
+  var uri = vscode.Uri.from({ scheme: 'rgss-search', path: `${id}/${encodeURIComponent(text)}` })
+  vscode.commands.executeCommand('vscode.open', uri)
+}
+
+function unsearch(doc: vscode.TextDocument): void {
+  var [id] = doc.uri.path.split('/')
+  RGSS_Scripts_Search_Result.delete(parseInt(id))
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   var fs = new RGSS_Scripts()
 
@@ -663,8 +861,18 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(vscode.workspace.registerFileSystemProvider('rgss', fs, { isCaseSensitive: true }))
 
+  var search_result = new RGSS_Scripts_Search_Result()
+  context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider('rgss-search', search_result))
+  context.subscriptions.push(vscode.workspace.onDidCloseTextDocument(unsearch))
+
+  var syntax = new RGSS_Scripts_Search_Result_Syntax()
+  var { legend } = RGSS_Scripts_Search_Result_Syntax
+  context.subscriptions.push(vscode.languages.registerDocumentSemanticTokensProvider({ scheme: 'rgss-search' }, syntax, legend))
+
   context.subscriptions.push(vscode.commands.registerCommand('rgss.open', mount))
   context.subscriptions.push(vscode.commands.registerCommand('rgss.close', unmount))
+  context.subscriptions.push(vscode.commands.registerCommand('rgss.pick', pick.bind(null, fs, info?.file)))
+  context.subscriptions.push(vscode.commands.registerCommand('rgss.search', search.bind(null, fs, info?.file, search_result)))
 
   context.subscriptions.push(vscode.commands.registerCommand('rgss.insert', item => fs.ni(item)))
   context.subscriptions.push(vscode.commands.registerCommand('rgss.delete', item => fs.rm(item)))

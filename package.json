@@ -29,7 +29,8 @@
       {
         "command": "rgss.close",
         "title": "Close Scripts.rvdata2",
-        "category": "RGSS Scripts"
+        "category": "RGSS Scripts",
+        "icon": "$(close)"
       },
       {
         "command": "rgss.insert",
@@ -54,13 +55,25 @@
         "title": "Run",
         "category": "RGSS Scripts",
         "icon": "$(play)"
+      },
+      {
+        "command": "rgss.pick",
+        "title": "Search files by name",
+        "category": "RGSS Scripts",
+        "icon": "$(file)"
+      },
+      {
+        "command": "rgss.search",
+        "title": "Search text in files",
+        "category": "RGSS Scripts",
+        "icon": "$(search)"
       }
     ],
     "menus": {
       "editor/title": [
         {
           "command": "rgss.run",
-          "when": "resourceScheme == rgss",
+          "when": "resourceScheme == rgss && isWindows",
           "group": "navigation"
         }
       ],
@@ -81,11 +94,38 @@
           "group": "inline"
         }
       ],
+      "view/title": [
+        {
+          "command": "rgss.pick",
+          "when": "view == rgss.scripts",
+          "group": "navigation"
+        },
+        {
+          "command": "rgss.search",
+          "when": "view == rgss.scripts",
+          "group": "navigation"
+        },
+        {
+          "command": "rgss.close",
+          "when": "view == rgss.scripts",
+          "group": "navigation"
+        }
+      ],
       "commandPalette": [
         {
-          "when": "explorerResourceIsRoot",
-          "command": "rgss.close",
-          "group": "navigation"
+          "command": "rgss.insert",
+          "when": "false",
+          "group": "inline"
+        },
+        {
+          "command": "rgss.delete",
+          "when": "false",
+          "group": "inline"
+        },
+        {
+          "command": "rgss.rename",
+          "when": "false",
+          "group": "inline"
         }
       ]
     },
@@ -102,7 +142,15 @@
           "name": "Scripts"
         }
       ]
-    }
+    },
+    "resourceLabelFormatters": [
+      {
+        "scheme": "rgss-search",
+        "formatting": {
+          "label": "Find Results"
+        }
+      }
+    ]
   },
   "activationEvents": [
     "workspaceContains:**/Scripts.rvdata2",

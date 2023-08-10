@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Add a pick command to quickly open a script.
+- Add a search command to search contents in scripts.
+
 ## 0.1.2
 
 - Add a [<q>run</q>](https://code.visualstudio.com/api/extension-guides/virtual-documents) button to directly run the Game.exe.
