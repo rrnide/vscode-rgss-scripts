@@ -1,9 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.1.2
 
 - Add a [<q>run</q>](https://code.visualstudio.com/api/extension-guides/virtual-documents) button to directly run the Game.exe.
 - Automatically close all tabs when running `Close Scripts.rvdata2` command.
+- Automatically reveal the current script in the tree view.
 
 ## 0.1.1
 
