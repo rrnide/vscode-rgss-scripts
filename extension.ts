@@ -26,6 +26,7 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
     if (index < 0) return undefined
 
     if (p.length === index + 16) {
+      if (process.platform === 'win32') p = p.replace(/\//g, '\\')
       return { file: p, index: -1, title: '' }
     }
     if (p[index + 16] !== '/') return undefined
