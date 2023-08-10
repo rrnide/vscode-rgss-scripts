@@ -383,6 +383,13 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
   }
 
   // Below are APIs used by the tree view
+  private _close(uri: vscode.Uri): void {
+    var filter = function filter(tab: vscode.Tab) {
+      return tab.input instanceof vscode.TabInputText && tab.input.uri.toString() === uri.toString()
+    }
+    vscode.window.tabGroups.close(vscode.window.tabGroups.all.flatMap(group => group.tabs.filter(filter)))
+  }
+
   async ls(file: string): Promise<string[] | null> {
     try {
       var entry = await this._open(file)
@@ -401,16 +408,27 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
     await this._flush(tree.file, entry.contents)
     this._refreshFilesExplorer()
     tree.refresh()
+
+    vscode.commands.executeCommand('vscode.open', this._uri(tree.file, entry.contents, index))
   }
 
   async rm({ tree, index }: ScriptItem): Promise<void> {
     if (tree.file == null) return
-    // Should we ask for confirmation?
     var entry = await this._open(tree.file)
     if (index === entry.contents.length) {
       vscode.window.showInformationMessage('Cannot delete the last item')
       return
     }
+    if (entry.contents[index][1] || entry.contents[index][2].byteLength > 0) {
+      var [_, title, code] = entry.contents[index]
+      var answer = await vscode.window.showInformationMessage(
+        `Are you sure to delete '${title}' (${code.byteLength} bytes)?`,
+        'Yes',
+        'No',
+      )
+      if (answer !== 'Yes') return
+    }
+    this._close(this._uri(tree.file, entry.contents, index))
     entry.contents.splice(index, 1)
 
     await this._flush(tree.file, entry.contents)
@@ -435,6 +453,10 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
       },
     })
     if (newTitle == null || newTitle === item[1]) return
+    if (index < entry.contents.length) {
+      this._close(this._uri(tree.file, entry.contents, index))
+    }
+
     item[1] = newTitle
     if (index === entry.contents.length) {
       entry.contents.push(item)
@@ -443,6 +465,8 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
     await this._flush(tree.file, entry.contents)
     this._refreshFilesExplorer()
     tree.refresh()
+
+    vscode.commands.executeCommand('vscode.open', this._uri(tree.file, entry.contents, index))
   }
 }
 
@@ -466,6 +490,8 @@ class ScriptItem extends vscode.TreeItem {
 export class RGSS_Scripts_Tree implements vscode.TreeDataProvider<ScriptItem> {
   private _onDidChangeTreeData = new vscode.EventEmitter<ScriptItem | null>()
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event
+
+  children: ScriptItem[] | null = null
 
   constructor(readonly fs: RGSS_Scripts, readonly file?: string) {}
 
@@ -492,11 +518,17 @@ export class RGSS_Scripts_Tree implements vscode.TreeDataProvider<ScriptItem> {
       }
       // Append a 'null' item like RPG Maker, so that you can append new file to the end
       result.push(new ScriptItem(this, i, '', null))
+      // Expose to let the tree view instance reveal
+      this.children = result
       return result
     } catch {
       vscode.window.showInformationMessage('No mounted Scripts.rvdata2 file')
       return null
     }
+  }
+
+  getParent(element: ScriptItem): null {
+    return null
   }
 }
 
@@ -565,11 +597,10 @@ function unmount(uri: vscode.Uri | undefined): void {
     vscode.workspace.updateWorkspaceFolders(folder.index, 1)
   }
 
-  for (var tab of vscode.window.tabGroups.all.map(e => e.tabs).flat()) {
-    if (tab.input instanceof vscode.TabInputText && RGSS_Scripts.parse(tab.input.uri.fsPath)?.file === uri.fsPath) {
-      vscode.window.tabGroups.close(tab)
-    }
+  var filter = function filter(tab: vscode.Tab) {
+    return tab.input instanceof vscode.TabInputText && RGSS_Scripts.parse(tab.input.uri.fsPath)?.file === uri!.fsPath
   }
+  vscode.window.tabGroups.close(vscode.window.tabGroups.all.flatMap(group => group.tabs.filter(filter)))
 }
 
 function dirname(p: string): string {
@@ -613,12 +644,22 @@ async function run(file?: string): Promise<void> {
   }
 }
 
+function reveal(context: { tree: RGSS_Scripts_Tree; viewer: vscode.TreeView<ScriptItem> }, doc: vscode.TextDocument): void {
+  if (context.tree.children == null) return
+  var item = context.tree.children.find(e => e.uri?.toString() === doc.uri.toString())
+  item && !context.viewer.selection.includes(item) && context.viewer.reveal(item, { select: true })
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   var fs = new RGSS_Scripts()
 
   var p = vscode.workspace.workspaceFolders?.find(e => e.uri.scheme === 'rgss')?.uri.fsPath
   var info = p ? RGSS_Scripts.parse(p) : null
-  context.subscriptions.push(vscode.window.registerTreeDataProvider('rgss.scripts', new RGSS_Scripts_Tree(fs, info?.file)))
+  var tree = new RGSS_Scripts_Tree(fs, info?.file)
+  context.subscriptions.push(vscode.window.registerTreeDataProvider('rgss.scripts', tree))
+  var viewer = vscode.window.createTreeView('rgss.scripts', { treeDataProvider: tree })
+
+  context.subscriptions.push(vscode.workspace.onDidOpenTextDocument(reveal.bind(null, { tree, viewer })))
 
   context.subscriptions.push(vscode.workspace.registerFileSystemProvider('rgss', fs, { isCaseSensitive: true }))
 
