@@ -9,6 +9,8 @@ Open and edit Scripts.rvdata2 in VS Code.
 
 Run `Open Scripts.rvdata2` in command palette.
 
+## [Changelog](./CHANGELOG.md)
+
 ## License
 
 MIT @ [hyrious](https://github.com/hyrious)

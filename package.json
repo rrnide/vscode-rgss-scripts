@@ -48,9 +48,22 @@
         "title": "Rename",
         "category": "RGSS Scripts",
         "icon": "$(edit)"
+      },
+      {
+        "command": "rgss.run",
+        "title": "Run",
+        "category": "RGSS Scripts",
+        "icon": "$(play)"
       }
     ],
     "menus": {
+      "editor/title": [
+        {
+          "command": "rgss.run",
+          "when": "resourceScheme == rgss",
+          "group": "navigation"
+        }
+      ],
       "view/item/context": [
         {
           "command": "rgss.insert",

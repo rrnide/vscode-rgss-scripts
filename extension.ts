@@ -393,6 +393,7 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
 
   // New-Item, get it? :P
   async ni({ tree, index }: ScriptItem): Promise<void> {
+    if (tree.file == null) return
     var entry = await this._open(tree.file)
     entry.contents.splice(index, 0, this._empty())
 
@@ -402,6 +403,7 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
   }
 
   async rm({ tree, index }: ScriptItem): Promise<void> {
+    if (tree.file == null) return
     // Should we ask for confirmation?
     var entry = await this._open(tree.file)
     if (index === entry.contents.length) {
@@ -418,6 +420,7 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
   // Cannot add an inline rename input box, see https://github.com/microsoft/vscode/issues/97190
   async mv(treeItem: ScriptItem): Promise<void> {
     var { tree, index } = treeItem
+    if (tree.file == null) return
     var entry = await this._open(tree.file)
     var item = entry.contents[index] || this._empty()
     var newTitle = await vscode.window.showInputBox({
@@ -463,7 +466,7 @@ export class RGSS_Scripts_Tree implements vscode.TreeDataProvider<ScriptItem> {
   private _onDidChangeTreeData = new vscode.EventEmitter<ScriptItem | null>()
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event
 
-  constructor(readonly fs: RGSS_Scripts, readonly file: string) {}
+  constructor(readonly fs: RGSS_Scripts, readonly file?: string) {}
 
   refresh(): void {
     this._onDidChangeTreeData.fire(null)
@@ -475,7 +478,7 @@ export class RGSS_Scripts_Tree implements vscode.TreeDataProvider<ScriptItem> {
 
   async getChildren(element?: ScriptItem): Promise<ScriptItem[] | null> {
     // No need to handle 'element' since it only has one level of depth
-    if (element) return null
+    if (this.file == null || element) return null
 
     try {
       var titles = await this.fs.ls(this.file)
@@ -568,14 +571,53 @@ function unmount(uri: vscode.Uri | undefined): void {
   }
 }
 
+function dirname(p: string): string {
+  if (process.platform === 'win32') {
+    var index = p.lastIndexOf('\\')
+    if (index < 0) return p
+    return p.slice(0, index)
+  }
+  var index = p.lastIndexOf('/')
+  if (index < 0) return p
+  return p.slice(0, index)
+}
+
+// file = "/path/to/Scripts.rvdata2"
+async function run(file?: string): Promise<void> {
+  if (file == null) {
+    return
+  }
+  if (process.platform !== 'win32') {
+    vscode.window.showErrorMessage('Only Windows is supported to run RPG Maker games')
+    return
+  }
+  var find_exe = async function find_exe(dir: string): Promise<string | undefined> {
+    var files = await vscode.workspace.fs.readDirectory(vscode.Uri.file(dir))
+    for (var [name, type] of files) {
+      // If there is Game.ini, there must be Game.exe at the same directory
+      if (type === vscode.FileType.File && name.endsWith('.ini')) {
+        var name2 = name.replace(/\.ini$/, '.exe')
+        if (files.some(e => e[0] === name2 && e[1] === vscode.FileType.File)) {
+          return vscode.Uri.joinPath(vscode.Uri.file(dir), name2).fsPath
+        }
+      }
+    }
+  }
+  var dir = dirname(file)
+  var exe = (await find_exe(dir)) || (await find_exe((dir = dirname(dir))))
+  if (exe) {
+    var p = new vscode.ProcessExecution(exe, ['test', 'console'], { cwd: dir })
+    vscode.window.showInformationMessage(`Running ${exe}`)
+    vscode.tasks.executeTask(new vscode.Task({ type: 'shell' }, vscode.TaskScope.Workspace, 'Run', 'RPG Maker', p))
+  }
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   var fs = new RGSS_Scripts()
 
   var p = vscode.workspace.workspaceFolders?.find(e => e.uri.scheme === 'rgss')?.uri.fsPath
-  var info = p && RGSS_Scripts.parse(p)
-  if (info) {
-    context.subscriptions.push(vscode.window.registerTreeDataProvider('rgss.scripts', new RGSS_Scripts_Tree(fs, info.file)))
-  }
+  var info = p ? RGSS_Scripts.parse(p) : null
+  context.subscriptions.push(vscode.window.registerTreeDataProvider('rgss.scripts', new RGSS_Scripts_Tree(fs, info?.file)))
 
   context.subscriptions.push(vscode.workspace.registerFileSystemProvider('rgss', fs, { isCaseSensitive: true }))
 
@@ -585,4 +627,6 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(vscode.commands.registerCommand('rgss.insert', item => fs.ni(item)))
   context.subscriptions.push(vscode.commands.registerCommand('rgss.delete', item => fs.rm(item)))
   context.subscriptions.push(vscode.commands.registerCommand('rgss.rename', item => fs.mv(item)))
+
+  context.subscriptions.push(vscode.commands.registerCommand('rgss.run', run.bind(null, info?.file)))
 }
