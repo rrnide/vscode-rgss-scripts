@@ -771,43 +771,42 @@ async function pick(fs: RGSS_Scripts, file?: string): Promise<void> {
 }
 
 export class RGSS_Scripts_Search_Result implements vscode.TextDocumentContentProvider {
-  private _onDidChange = new vscode.EventEmitter<vscode.Uri>()
-  readonly onDidChange = this._onDidChange.event
-
-  private static _id = 0
-  static nextId() {
-    return RGSS_Scripts_Search_Result._id++
+  private _id = 0
+  nextId() {
+    return this._id++
   }
-  private static _cache = new Map<number, string>()
-  static get(id: number): string | undefined {
-    return RGSS_Scripts_Search_Result._cache.get(id)
+  private _cache = new Map<number, string>()
+  get(id: number): string | undefined {
+    return this._cache.get(id)
   }
-  static set(id: number, text: string): void {
-    RGSS_Scripts_Search_Result._cache.set(id, text)
+  set(id: number, text: string): void {
+    this._cache.set(id, text)
   }
-  static delete(id: number): void {
-    RGSS_Scripts_Search_Result._cache.delete(id)
+  delete(id: number): void {
+    this._cache.delete(id)
   }
 
   setAndGetNextId(text: string) {
-    var id = RGSS_Scripts_Search_Result.nextId()
-    RGSS_Scripts_Search_Result.set(id, text)
+    var id = this.nextId()
+    this.set(id, text)
     return id
   }
 
-  // uri = 'rgss-search:0/text'
   provideTextDocumentContent(uri: vscode.Uri): string | undefined {
     var [id] = uri.path.split('/')
-    return RGSS_Scripts_Search_Result._cache.get(parseInt(id))
+    return this._cache.get(parseInt(id))
   }
 }
 
+// uri = 'rgss-search:0/encode(searching-text)/encode(path/to/Scripts.rvdata2)'
 export class RGSS_Scripts_Search_Result_Syntax implements vscode.DocumentSemanticTokensProvider {
   static legend = new vscode.SemanticTokensLegend(['enum', 'number', 'function', 'comment'])
 
+  constructor(private readonly search_result: RGSS_Scripts_Search_Result) {}
+
   provideDocumentSemanticTokens(doc: vscode.TextDocument): vscode.ProviderResult<vscode.SemanticTokens> {
     var [id] = doc.uri.path.split('/')
-    var text = RGSS_Scripts_Search_Result.get(parseInt(id))
+    var text = this.search_result.get(parseInt(id))
     if (text == null) return
 
     var builder = new vscode.SemanticTokensBuilder(RGSS_Scripts_Search_Result_Syntax.legend)
@@ -831,6 +830,39 @@ export class RGSS_Scripts_Search_Result_Syntax implements vscode.DocumentSemanti
   }
 }
 
+export class RGSS_Scripts_Search_Result_Link implements vscode.DefinitionProvider {
+  provideDefinition(doc: vscode.TextDocument, pos: vscode.Position): vscode.ProviderResult<vscode.Definition> {
+    var [, , file] = doc.uri.path.split('/')
+    file = decodeURIComponent(file)
+
+    var line = doc.lineAt(pos.line).text
+    var match = /^ +([0-9]+):/.exec(line)
+    if (match == null) return
+    var row = parseInt(match[1])
+
+    var lines = doc.getText().split(/\r\n|\n|\r/g)
+    var name = this._findName(lines, pos.line)
+    if (name == null) return
+
+    var uri = vscode.Uri.from({
+      scheme: 'rgss',
+      path: vscode.Uri.joinPath(vscode.Uri.file(file), name).path,
+    })
+
+    var range = new vscode.Range(row - 1, 0, row - 1, line.length)
+    return new vscode.Location(uri, range)
+  }
+
+  // 001_Title.rb
+  private _findName(lines: string[], at: number): string | undefined {
+    for (var i = at; i >= 0; --i) {
+      var line = lines[i]
+      var match = /^([^ ].*):$/.exec(line)
+      if (match) return match[1]
+    }
+  }
+}
+
 async function search(fs: RGSS_Scripts, file: string | undefined, search_result: RGSS_Scripts_Search_Result): Promise<void> {
   if (file == null) return
   var text = await vscode.window.showInputBox({ prompt: 'Search' })
@@ -839,13 +871,13 @@ async function search(fs: RGSS_Scripts, file: string | undefined, search_result:
   var content = ''
   for (var e of items) content += e.text + '\n'
   var id = search_result.setAndGetNextId(content)
-  var uri = vscode.Uri.from({ scheme: 'rgss-search', path: `${id}/${encodeURIComponent(text)}` })
+  var uri = vscode.Uri.from({ scheme: 'rgss-search', path: `${id}/${encodeURIComponent(text)}/${encodeURIComponent(file)}` })
   vscode.commands.executeCommand('vscode.open', uri)
 }
 
-function unsearch(doc: vscode.TextDocument): void {
+function unsearch(search_result: RGSS_Scripts_Search_Result, doc: vscode.TextDocument): void {
   var [id] = doc.uri.path.split('/')
-  RGSS_Scripts_Search_Result.delete(parseInt(id))
+  search_result.delete(parseInt(id))
 }
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -863,11 +895,14 @@ export function activate(context: vscode.ExtensionContext): void {
 
   var search_result = new RGSS_Scripts_Search_Result()
   context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider('rgss-search', search_result))
-  context.subscriptions.push(vscode.workspace.onDidCloseTextDocument(unsearch))
+  context.subscriptions.push(vscode.workspace.onDidCloseTextDocument(unsearch.bind(null, search_result)))
 
-  var syntax = new RGSS_Scripts_Search_Result_Syntax()
+  var syntax = new RGSS_Scripts_Search_Result_Syntax(search_result)
   var { legend } = RGSS_Scripts_Search_Result_Syntax
   context.subscriptions.push(vscode.languages.registerDocumentSemanticTokensProvider({ scheme: 'rgss-search' }, syntax, legend))
+
+  var link = new RGSS_Scripts_Search_Result_Link()
+  context.subscriptions.push(vscode.languages.registerDefinitionProvider({ scheme: 'rgss-search' }, link))
 
   context.subscriptions.push(vscode.commands.registerCommand('rgss.open', mount))
   context.subscriptions.push(vscode.commands.registerCommand('rgss.close', unmount))
