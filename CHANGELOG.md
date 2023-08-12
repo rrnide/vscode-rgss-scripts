@@ -1,9 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.1.3
 
 - Add a pick command to quickly open a script.
 - Add a search command to search contents in scripts.
+- Add double click handler to search results to jump to the location.
 
 ## 0.1.2
 

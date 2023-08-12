@@ -830,39 +830,6 @@ export class RGSS_Scripts_Search_Result_Syntax implements vscode.DocumentSemanti
   }
 }
 
-export class RGSS_Scripts_Search_Result_Link implements vscode.DefinitionProvider {
-  provideDefinition(doc: vscode.TextDocument, pos: vscode.Position): vscode.ProviderResult<vscode.Definition> {
-    var [, , file] = doc.uri.path.split('/')
-    file = decodeURIComponent(file)
-
-    var line = doc.lineAt(pos.line).text
-    var match = /^ +([0-9]+):/.exec(line)
-    if (match == null) return
-    var row = parseInt(match[1])
-
-    var lines = doc.getText().split(/\r\n|\n|\r/g)
-    var name = this._findName(lines, pos.line)
-    if (name == null) return
-
-    var uri = vscode.Uri.from({
-      scheme: 'rgss',
-      path: vscode.Uri.joinPath(vscode.Uri.file(file), name).path,
-    })
-
-    var range = new vscode.Range(row - 1, 0, row - 1, line.length)
-    return new vscode.Location(uri, range)
-  }
-
-  // 001_Title.rb
-  private _findName(lines: string[], at: number): string | undefined {
-    for (var i = at; i >= 0; --i) {
-      var line = lines[i]
-      var match = /^([^ ].*):$/.exec(line)
-      if (match) return match[1]
-    }
-  }
-}
-
 async function search(fs: RGSS_Scripts, file: string | undefined, search_result: RGSS_Scripts_Search_Result): Promise<void> {
   if (file == null) return
   var text = await vscode.window.showInputBox({ prompt: 'Search' })
@@ -872,12 +839,84 @@ async function search(fs: RGSS_Scripts, file: string | undefined, search_result:
   for (var e of items) content += e.text + '\n'
   var id = search_result.setAndGetNextId(content)
   var uri = vscode.Uri.from({ scheme: 'rgss-search', path: `${id}/${encodeURIComponent(text)}/${encodeURIComponent(file)}` })
-  vscode.commands.executeCommand('vscode.open', uri)
+  await vscode.commands.executeCommand('vscode.open', uri)
+  await vscode.commands.executeCommand('workbench.action.keepEditor', uri)
 }
 
 function unsearch(search_result: RGSS_Scripts_Search_Result, doc: vscode.TextDocument): void {
   var [id] = doc.uri.path.split('/')
   search_result.delete(parseInt(id))
+}
+
+// https://github.com/antfu/vscode-smart-clicks/blob/main/src/index.ts
+var last = 0
+var prevEditor: vscode.TextEditor | undefined
+var prevSelection: vscode.Selection | undefined
+var timer = setTimeout(() => void 0)
+async function dblclick(event: vscode.TextEditorSelectionChangeEvent): Promise<void> {
+  clearTimeout(timer)
+  if (event.kind !== vscode.TextEditorSelectionChangeKind.Mouse || event.textEditor.document.uri.scheme !== 'rgss-search') {
+    last = 0
+    return
+  }
+
+  var selection = event.selections[0]
+
+  try {
+    if (
+      prevEditor !== event.textEditor ||
+      !prevSelection ||
+      !prevSelection.isEmpty ||
+      event.selections.length !== 1 ||
+      selection.start.line !== prevSelection.start.line ||
+      Date.now() - last > 600
+    )
+      return
+  } finally {
+    prevEditor = event.textEditor
+    prevSelection = selection
+    last = Date.now()
+  }
+
+  timer = setTimeout(async () => {
+    var doc = event.textEditor.document
+    var { rangeIncludingLineBreak } = doc.lineAt(event.textEditor.selection.active.line - 1)
+    if (rangeIncludingLineBreak.isEqual(selection)) return
+
+    var pos = selection.start
+    var [, , file] = doc.uri.path.split('/')
+    file = decodeURIComponent(file)
+
+    var line = doc.lineAt(pos.line).text
+    var match = /^ +([0-9]+):/.exec(line)
+    if (match == null) return
+    var row = parseInt(match[1])
+
+    var lines = doc.getText().split(/\r\n|\n|\r/g)
+    var name: string | undefined
+    for (var i = pos.line; i >= 0; --i) {
+      var line = lines[i]
+      var match = /^([^ ].*):$/.exec(line)
+      if (match) {
+        name = match[1]
+        break
+      }
+    }
+    if (name == null) return
+
+    var uri = vscode.Uri.from({
+      scheme: 'rgss',
+      path: vscode.Uri.joinPath(vscode.Uri.file(file), name).path,
+    })
+    await vscode.commands.executeCommand('vscode.open', uri)
+
+    var editor = vscode.window.activeTextEditor
+    if (editor && editor.document.uri.toString() === uri.toString()) {
+      var range = editor.document.lineAt(row - 1).range
+      editor.selection = new vscode.Selection(range.start, range.end)
+      editor.revealRange(range)
+    }
+  }, 150)
 }
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -900,9 +939,7 @@ export function activate(context: vscode.ExtensionContext): void {
   var syntax = new RGSS_Scripts_Search_Result_Syntax(search_result)
   var { legend } = RGSS_Scripts_Search_Result_Syntax
   context.subscriptions.push(vscode.languages.registerDocumentSemanticTokensProvider({ scheme: 'rgss-search' }, syntax, legend))
-
-  var link = new RGSS_Scripts_Search_Result_Link()
-  context.subscriptions.push(vscode.languages.registerDefinitionProvider({ scheme: 'rgss-search' }, link))
+  context.subscriptions.push(vscode.window.onDidChangeTextEditorSelection(dblclick))
 
   context.subscriptions.push(vscode.commands.registerCommand('rgss.open', mount))
   context.subscriptions.push(vscode.commands.registerCommand('rgss.close', unmount))
