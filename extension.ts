@@ -10,7 +10,6 @@ type CacheEntry = { stat: vscode.FileStat; contents: RGSS_Scripts_Data }
 
 // Simulate a virtual FS whose path looks like rgss:/path/to/Scripts.rvdata2/001_Title.rb
 export class RGSS_Scripts implements vscode.FileSystemProvider {
-  private readonly _encoder = new TextEncoder()
   private readonly _decoder = new TextDecoder()
 
   // Cache opened Scripts.rvdata2 files, populate its stats to the contents
@@ -76,7 +75,7 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
     }
 
     // https://github.com/hyrious/rvdata2-textconv/blob/main/index.js
-    var data = marshal.load(buffer, { decodeString: false })
+    var data = marshal.load(buffer, { string: 'binary' }) as [number, Uint8Array, Uint8Array][]
     var contents: RGSS_Scripts_Data = []
     for (var i = 0; i < data.length; i++) {
       var [magic, title_, code_] = data[i]
@@ -104,10 +103,10 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
   }
 
   private async _flush(file: string, contents: RGSS_Scripts_Data): Promise<void> {
-    var data: [number, ArrayBuffer, ArrayBuffer][] = Array(contents.length)
+    var data: [number, string, ArrayBuffer][] = Array(contents.length)
     for (var i = 0; i < contents.length; i++) {
       var [magic, title, code] = contents[i]
-      data[i] = [magic, this._encoder.encode(title).buffer, new Uint8Array(await deflate(code)).buffer]
+      data[i] = [magic, title, new Uint8Array(await deflate(code))]
     }
     var u8 = new Uint8Array(marshal.dump(data))
     var entry = this._cache.get(file)
@@ -675,7 +674,7 @@ async function mount(uri: vscode.Uri | undefined): Promise<void> {
   }
 }
 
-function unmount(uri: vscode.Uri | undefined): void {
+function unmount(uri: ScriptItem | vscode.Uri | null | undefined): void {
   if (uri == null) {
     var folder = vscode.workspace.workspaceFolders?.find(folder => folder.uri.scheme === 'rgss')
     if (folder == null) {
@@ -683,6 +682,14 @@ function unmount(uri: vscode.Uri | undefined): void {
       return
     }
     uri = folder.uri
+  }
+
+  if ('uri' in uri) {
+    uri = uri.uri
+  }
+
+  if (uri == null) {
+    return
   }
 
   var rgssUri = vscode.Uri.parse(`rgss:${uri.fsPath}`)

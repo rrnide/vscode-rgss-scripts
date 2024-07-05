@@ -159,7 +159,7 @@
     "onStartupFinished"
   ],
   "dependencies": {
-    "@hyrious/marshal": "^0.2.5",
+    "@hyrious/marshal": "^0.3.3",
     "pako": "^2.1.0"
   },
   "devDependencies": {
