@@ -24,17 +24,17 @@
       {
         "command": "rgss.open",
         "title": "Open Scripts.rvdata2",
-        "category": "RGSS Scripts"
+        "category": "RGSS Scri@1pts"
       },
       {
         "command": "rgss.close",
         "title": "Close Scripts.rvdata2",
-        "category": "RGSS Scripts",
+        "category": "RGSS Scr@2ipts",
         "icon": "$(close)"
       },
       {
         "command": "rgss.insert",
-        "title": "New Script",
+        "title": "Insert new item above",
         "category": "RGSS Scripts",
         "icon": "$(file-add)"
       },
@@ -98,17 +98,17 @@
         {
           "command": "rgss.pick",
           "when": "view == rgss.scripts",
-          "group": "navigation"
+          "group": "navigation@1"
         },
         {
           "command": "rgss.search",
           "when": "view == rgss.scripts",
-          "group": "navigation"
+          "group": "navigation@1"
         },
         {
           "command": "rgss.close",
           "when": "view == rgss.scripts",
-          "group": "navigation"
+          "group": "navigation@2"
         }
       ],
       "commandPalette": [
@@ -140,7 +140,8 @@
         {
           "id": "rgss.scripts",
           "name": "Scripts",
-          "icon": "$(file-directory)"
+          "icon": "$(file-directory)",
+          "initialSize": 50
         }
       ]
     },

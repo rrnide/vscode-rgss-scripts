@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.4
+
+- Pick file implement with vscode's builtin `list.find`.
+- Automatically close missing files due to index change.
+- Update `@hyrious/marshal` to 0.3.3.
+
 ## 0.1.3
 
 - Add a pick command to quickly open a script.

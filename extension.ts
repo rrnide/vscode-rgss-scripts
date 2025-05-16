@@ -125,11 +125,11 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
       vscode.commands.executeCommand('workbench.files.action.refreshFilesExplorer')
   }
 
-  private _emitter = new vscode.EventEmitter<vscode.FileChangeEvent[]>()
   private _bufferedEvents: vscode.FileChangeEvent[] = []
   private _fireSoonHandle: NodeJS.Timer | undefined
 
-  readonly onDidChangeFile = this._emitter.event
+  private _onDidChangeFile = new vscode.EventEmitter<vscode.FileChangeEvent[]>()
+  readonly onDidChangeFile = this._onDidChangeFile.event
 
   // VS Code never calls this method... why? :(
   watch(uri: vscode.Uri, options: any): vscode.Disposable {
@@ -144,7 +144,7 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
     }
 
     this._fireSoonHandle = setTimeout(() => {
-      this._emitter.fire(this._bufferedEvents)
+      this._onDidChangeFile.fire(this._bufferedEvents)
       this._bufferedEvents.length = 0
     }, 5)
   }
@@ -402,7 +402,19 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
   async ni({ tree, index }: ScriptItem): Promise<void> {
     if (tree.file == null) return
     var entry = await this._open(tree.file)
+    for (var i = index; i < entry.contents.length; ++i) {
+      this._fireSoon({
+        type: vscode.FileChangeType.Deleted,
+        uri: this._uri(tree.file, entry.contents, i),
+      })
+    }
     entry.contents.splice(index, 0, this._empty())
+    for (var i = index; i < entry.contents.length; ++i) {
+      this._fireSoon({
+        type: vscode.FileChangeType.Created,
+        uri: this._uri(tree.file, entry.contents, i),
+      })
+    }
 
     await this._flush(tree.file, entry.contents)
     this._refreshFilesExplorer()
@@ -428,7 +440,19 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
       if (answer !== 'Yes') return
     }
     this._close(this._uri(tree.file, entry.contents, index))
+    for (var i = index; i < entry.contents.length; ++i) {
+      this._fireSoon({
+        type: vscode.FileChangeType.Deleted,
+        uri: this._uri(tree.file, entry.contents, i),
+      })
+    }
     entry.contents.splice(index, 1)
+    for (var i = index + 1; i < entry.contents.length; ++i) {
+      this._fireSoon({
+        type: vscode.FileChangeType.Created,
+        uri: this._uri(tree.file, entry.contents, i),
+      })
+    }
 
     await this._flush(tree.file, entry.contents)
     this._refreshFilesExplorer()
@@ -453,6 +477,10 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
     })
     if (newTitle == null || newTitle === item[1]) return
     if (index < entry.contents.length) {
+      this._fireSoon({
+        type: vscode.FileChangeType.Deleted,
+        uri: this._uri(tree.file, entry.contents, index),
+      })
       this._close(this._uri(tree.file, entry.contents, index))
     }
 
@@ -460,12 +488,16 @@ export class RGSS_Scripts implements vscode.FileSystemProvider {
     if (index === entry.contents.length) {
       entry.contents.push(item)
     }
+    this._fireSoon({
+      type: vscode.FileChangeType.Created,
+      uri: this._uri(tree.file, entry.contents, index),
+    })
 
     await this._flush(tree.file, entry.contents)
     this._refreshFilesExplorer()
     tree.refresh()
 
-    vscode.commands.executeCommand('vscode.open', this._uri(tree.file, entry.contents, index))
+    // vscode.commands.executeCommand('vscode.open', this._uri(tree.file, entry.contents, index))
   }
 
   // ripgrep
@@ -587,10 +619,10 @@ class ScriptItem extends vscode.TreeItem {
 
   override command: vscode.Command | undefined = this.uri
     ? {
-        command: 'vscode.open',
-        title: 'Open Script',
-        arguments: [this.uri],
-      }
+      command: 'vscode.open',
+      title: 'Open Script',
+      arguments: [this.uri],
+    }
     : void 0
 }
 
@@ -600,7 +632,7 @@ export class RGSS_Scripts_Tree implements vscode.TreeDataProvider<ScriptItem> {
 
   children: ScriptItem[] | null = null
 
-  constructor(readonly fs: RGSS_Scripts, readonly file?: string) {}
+  constructor(readonly fs: RGSS_Scripts, readonly file?: string) { }
 
   refresh(): void {
     this._onDidChangeTreeData.fire(null)
@@ -763,6 +795,7 @@ function reveal(context: { tree: RGSS_Scripts_Tree; viewer: vscode.TreeView<Scri
   item && !context.viewer.selection.includes(item) && context.viewer.reveal(item, { select: true })
 }
 
+// @ts-ignore Replaced with 'list.find'.
 async function pick(fs: RGSS_Scripts, file?: string): Promise<void> {
   if (file == null) return
   var files = await fs.readDirectory(vscode.Uri.file(file))
@@ -809,7 +842,7 @@ export class RGSS_Scripts_Search_Result implements vscode.TextDocumentContentPro
 export class RGSS_Scripts_Search_Result_Syntax implements vscode.DocumentSemanticTokensProvider {
   static legend = new vscode.SemanticTokensLegend(['enum', 'number', 'function', 'comment'])
 
-  constructor(private readonly search_result: RGSS_Scripts_Search_Result) {}
+  constructor(private readonly search_result: RGSS_Scripts_Search_Result) { }
 
   provideDocumentSemanticTokens(doc: vscode.TextDocument): vscode.ProviderResult<vscode.SemanticTokens> {
     var [id] = doc.uri.path.split('/')
@@ -839,7 +872,7 @@ export class RGSS_Scripts_Search_Result_Syntax implements vscode.DocumentSemanti
 
 async function search(fs: RGSS_Scripts, file: string | undefined, search_result: RGSS_Scripts_Search_Result): Promise<void> {
   if (file == null) return
-  var text = await vscode.window.showInputBox({ prompt: 'Search' })
+  var text = await vscode.window.showInputBox({ prompt: 'Search', placeHolder: 'Search term across files' })
   if (text == null) return
   var items = await fs.rg(file, text)
   var content = ''
@@ -950,7 +983,13 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(vscode.commands.registerCommand('rgss.open', mount))
   context.subscriptions.push(vscode.commands.registerCommand('rgss.close', unmount))
-  context.subscriptions.push(vscode.commands.registerCommand('rgss.pick', pick.bind(null, fs, info?.file)))
+  // context.subscriptions.push(vscode.commands.registerCommand('rgss.pick', pick.bind(null, fs, info?.file)))
+  context.subscriptions.push(vscode.commands.registerCommand('rgss.pick', async () => {
+    if (tree.children == null) return
+    var first = tree.children.find(() => true)!
+    await viewer.reveal(first, { focus: true })
+    await vscode.commands.executeCommand('list.find')
+  }))
   context.subscriptions.push(vscode.commands.registerCommand('rgss.search', search.bind(null, fs, info?.file, search_result)))
 
   context.subscriptions.push(vscode.commands.registerCommand('rgss.insert', item => fs.ni(item)))
