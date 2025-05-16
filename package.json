@@ -139,7 +139,8 @@
       "explorer": [
         {
           "id": "rgss.scripts",
-          "name": "Scripts"
+          "name": "Scripts",
+          "icon": "$(file-directory)"
         }
       ]
     },
@@ -165,10 +166,10 @@
   "devDependencies": {
     "@hyrious/rimraf": "^0.1.0",
     "@types/node": "18.x",
-    "@types/vscode": "^1.75.0",
-    "esbuild": "^0.18.18"
+    "@types/vscode": "^1.100.0",
+    "esbuild": "^0.25.4"
   },
   "engines": {
-    "vscode": "^1.75.0"
+    "vscode": "^1.100.0"
   }
 }
